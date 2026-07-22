@@ -1,0 +1,1512 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+<title>Fetch A Groomer</title>
+<meta name="theme-color" content="#2f8f7a">
+<meta name="description" content="Grooming appointment, client, and payment tracker for Fetch A Groomer">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Fetch A Groomer">
+<style>
+:root{
+  --teal-900:#173832; --teal-700:#1f5c50; --teal-600:#2f8f7a; --teal-500:#3aa892; --teal-100:#e4f3ef;
+  --orange-600:#d97a3f; --orange-500:#e88a4c; --orange-100:#fbe8d9;
+  --ink-900:#1a1f1e; --ink-700:#3d4644; --ink-500:#6b7573; --ink-300:#a8b0ae; --ink-100:#e6eae9;
+  --surface:#ffffff; --surface-2:#f4f7f6; --surface-3:#eef2f1; --border:#dde4e2;
+  --good:#2f8f5a; --warn:#c98a1c; --bad:#c94f3f;
+  --radius:14px; --radius-sm:10px; --radius-lg:20px;
+  --shadow:0 1px 3px rgba(20,30,28,.08), 0 1px 2px rgba(20,30,28,.06);
+  --shadow-lg:0 8px 24px rgba(20,30,28,.14);
+  --safe-top:env(safe-area-inset-top,0px); --safe-bottom:env(safe-area-inset-bottom,0px);
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+html,body{margin:0;padding:0;height:100%;}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  background:var(--surface-2); color:var(--ink-900); overscroll-behavior-y:none;
+  -webkit-font-smoothing:antialiased;
+}
+button,input,select,textarea{font-family:inherit;}
+h1,h2,h3,p{margin:0;}
+a{color:inherit;}
+.hidden{display:none !important;}
+img{max-width:100%;display:block;}
+
+/* ===== App shell ===== */
+#app{min-height:100%;padding-bottom:calc(72px + var(--safe-bottom));}
+header.topbar{
+  position:sticky; top:0; z-index:20; background:var(--teal-900); color:#fff;
+  padding:calc(14px + var(--safe-top)) 16px 14px; display:flex; align-items:center; gap:10px;
+  box-shadow:var(--shadow);
+}
+header.topbar h1{font-size:19px; font-weight:700; flex:1; letter-spacing:-.2px;}
+header.topbar .icon-btn{color:#fff;}
+.icon-btn{
+  background:rgba(255,255,255,.12); border:none; width:38px; height:38px; border-radius:10px;
+  display:flex; align-items:center; justify-content:center; font-size:18px; color:var(--ink-700); cursor:pointer;
+}
+.icon-btn:active{transform:scale(.94);}
+
+nav.bottomnav{
+  position:fixed; left:0; right:0; bottom:0; z-index:30; background:var(--surface);
+  border-top:1px solid var(--border); display:flex; padding-bottom:var(--safe-bottom);
+  box-shadow:0 -2px 12px rgba(20,30,28,.08);
+}
+nav.bottomnav button{
+  flex:1; border:none; background:none; padding:9px 2px 8px; display:flex; flex-direction:column;
+  align-items:center; gap:3px; color:var(--ink-500); font-size:11px; font-weight:600; cursor:pointer;
+}
+nav.bottomnav button .ic{font-size:21px; line-height:1;}
+nav.bottomnav button.active{color:var(--teal-600);}
+
+.fab{
+  position:fixed; right:18px; bottom:calc(84px + var(--safe-bottom)); z-index:25;
+  width:58px; height:58px; border-radius:50%; background:var(--orange-600); color:#fff; border:none;
+  font-size:28px; box-shadow:var(--shadow-lg); display:flex; align-items:center; justify-content:center; cursor:pointer;
+}
+.fab:active{transform:scale(.94);}
+
+main{padding:14px 14px 24px;}
+
+/* ===== Cards / lists ===== */
+.card{background:var(--surface); border-radius:var(--radius); padding:14px; box-shadow:var(--shadow); margin-bottom:10px;}
+.card.tap{cursor:pointer;}
+.card.tap:active{background:var(--surface-3);}
+.section-title{font-size:13px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:var(--ink-500); margin:18px 2px 8px;}
+.section-title:first-child{margin-top:2px;}
+.row{display:flex; align-items:center; gap:10px;}
+.row.between{justify-content:space-between;}
+.stack{display:flex; flex-direction:column; gap:10px;}
+.muted{color:var(--ink-500);}
+.small{font-size:12.5px;}
+.tiny{font-size:11px;}
+.bold{font-weight:700;}
+.pill{
+  display:inline-flex; align-items:center; padding:3px 10px; border-radius:999px; font-size:11.5px; font-weight:700;
+  background:var(--ink-100); color:var(--ink-700);
+}
+.pill.scheduled{background:var(--teal-100); color:var(--teal-700);}
+.pill.completed{background:#e1f2e6; color:var(--good);}
+.pill.cancelled{background:var(--ink-100); color:var(--ink-500);}
+.pill.no_show{background:#fbe4e0; color:var(--bad);}
+.pill.paid{background:#e1f2e6; color:var(--good);}
+.pill.unpaid{background:var(--orange-100); color:var(--orange-600);}
+.avatar{
+  width:42px; height:42px; border-radius:50%; background:var(--teal-100); color:var(--teal-700);
+  display:flex; align-items:center; justify-content:center; font-weight:700; font-size:16px; flex-shrink:0;
+}
+.empty{text-align:center; padding:36px 20px; color:var(--ink-500);}
+.empty .ic{font-size:34px; margin-bottom:8px;}
+
+/* ===== Forms ===== */
+.field{margin-bottom:12px;}
+.field label{display:block; font-size:12.5px; font-weight:700; color:var(--ink-700); margin-bottom:5px;}
+.field input[type=text],.field input[type=tel],.field input[type=email],.field input[type=number],
+.field input[type=date],.field input[type=datetime-local],.field select,.field textarea{
+  width:100%; padding:11px 12px; border:1.5px solid var(--border); border-radius:var(--radius-sm);
+  font-size:15.5px; background:var(--surface); color:var(--ink-900);
+}
+.field textarea{min-height:70px; resize:vertical;}
+.field input:focus,.field select:focus,.field textarea:focus{outline:none; border-color:var(--teal-600);}
+.field-row{display:flex; gap:10px;}
+.field-row>.field{flex:1;}
+.checkrow{display:flex; align-items:center; gap:8px; padding:10px 0;}
+.chip-select{display:flex; flex-wrap:wrap; gap:8px;}
+.chip{
+  padding:9px 14px; border-radius:999px; border:1.5px solid var(--border); background:var(--surface);
+  font-size:13.5px; font-weight:600; cursor:pointer; color:var(--ink-700);
+}
+.chip.selected{background:var(--teal-600); border-color:var(--teal-600); color:#fff;}
+
+.btn{
+  display:inline-flex; align-items:center; justify-content:center; gap:6px; border:none; border-radius:var(--radius-sm);
+  padding:12px 18px; font-size:15px; font-weight:700; cursor:pointer; width:100%;
+}
+.btn:active{transform:scale(.98);}
+.btn-primary{background:var(--teal-600); color:#fff;}
+.btn-secondary{background:var(--surface-3); color:var(--ink-900);}
+.btn-danger{background:#fbe4e0; color:var(--bad);}
+.btn-outline{background:transparent; color:var(--teal-600); border:1.5px solid var(--teal-600);}
+.btn-sm{width:auto; padding:8px 14px; font-size:13.5px;}
+.btn-row{display:flex; gap:8px;}
+.btn-row>.btn{flex:1;}
+
+/* ===== Modal / bottom sheet ===== */
+.overlay{
+  position:fixed; inset:0; background:rgba(15,25,22,.5); z-index:100; display:flex; align-items:flex-end;
+  opacity:0; pointer-events:none; transition:opacity .18s;
+}
+.overlay.open{opacity:1; pointer-events:auto;}
+.sheet{
+  background:var(--surface); width:100%; max-height:92vh; border-radius:20px 20px 0 0; overflow-y:auto;
+  transform:translateY(24px); transition:transform .2s; padding-bottom:calc(20px + var(--safe-bottom));
+}
+.overlay.open .sheet{transform:translateY(0);}
+.sheet-header{
+  position:sticky; top:0; background:var(--surface); z-index:2; display:flex; align-items:center; gap:10px;
+  padding:16px 16px 10px; border-bottom:1px solid var(--border);
+}
+.sheet-header h2{font-size:17px; font-weight:700; flex:1;}
+.sheet-body{padding:16px;}
+.sheet-drag{width:36px; height:4px; background:var(--ink-300); border-radius:99px; margin:8px auto 0;}
+
+/* ===== Toast ===== */
+#toast{
+  position:fixed; left:50%; bottom:calc(96px + var(--safe-bottom)); transform:translateX(-50%) translateY(20px);
+  background:var(--ink-900); color:#fff; padding:11px 18px; border-radius:99px; font-size:13.5px; font-weight:600;
+  z-index:200; opacity:0; pointer-events:none; transition:all .2s; max-width:88vw; text-align:center;
+}
+#toast.show{opacity:1; transform:translateX(-50%) translateY(0);}
+
+/* ===== Tabs (segmented) ===== */
+.segmented{display:flex; background:var(--surface-3); border-radius:var(--radius-sm); padding:3px; gap:2px;}
+.segmented button{
+  flex:1; border:none; background:none; padding:8px 4px; border-radius:8px; font-size:13px; font-weight:700;
+  color:var(--ink-500); cursor:pointer;
+}
+.segmented button.active{background:var(--surface); color:var(--teal-700); box-shadow:var(--shadow);}
+
+/* ===== Search bar ===== */
+.searchbar{
+  display:flex; align-items:center; gap:8px; background:var(--surface); border-radius:999px; padding:10px 14px;
+  box-shadow:var(--shadow); margin-bottom:14px;
+}
+.searchbar input{flex:1; border:none; outline:none; font-size:15px; background:none;}
+
+/* ===== Calendar ===== */
+.cal-header{display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;}
+.cal-header .label{font-size:16px; font-weight:700;}
+.cal-grid{display:grid; grid-template-columns:repeat(7,1fr); gap:4px; text-align:center;}
+.cal-dow{font-size:10.5px; font-weight:700; color:var(--ink-500); padding-bottom:4px;}
+.cal-day{
+  aspect-ratio:1; border-radius:10px; background:var(--surface); display:flex; flex-direction:column;
+  align-items:center; justify-content:flex-start; padding:4px 2px; font-size:12.5px; position:relative; cursor:pointer;
+  border:1.5px solid transparent;
+}
+.cal-day.other-month{opacity:.35;}
+.cal-day.today{border-color:var(--teal-600);}
+.cal-day.selected{background:var(--teal-600); color:#fff;}
+.cal-day .dots{display:flex; gap:2px; margin-top:3px;}
+.cal-day .dot{width:5px; height:5px; border-radius:50%; background:var(--teal-500);}
+.cal-day.selected .dot{background:#fff;}
+.week-row{display:flex; flex-direction:column; gap:8px;}
+.week-day-card{background:var(--surface); border-radius:var(--radius); padding:10px 12px; box-shadow:var(--shadow);}
+.week-day-card .wd-head{font-size:12px; font-weight:700; color:var(--ink-500); margin-bottom:6px;}
+.appt-row{
+  display:flex; gap:10px; align-items:center; padding:9px 0; border-top:1px solid var(--border);
+}
+.appt-row:first-child{border-top:none;}
+.appt-time{width:52px; font-size:12px; font-weight:700; color:var(--teal-700); flex-shrink:0;}
+
+/* ===== Stat tiles ===== */
+.stat-grid{display:grid; grid-template-columns:1fr 1fr; gap:10px;}
+.stat-tile{background:var(--surface); border-radius:var(--radius); padding:14px; box-shadow:var(--shadow);}
+.stat-tile .val{font-size:22px; font-weight:800; letter-spacing:-.3px;}
+.stat-tile .lbl{font-size:12px; color:var(--ink-500); font-weight:600; margin-top:2px;}
+.bar-row{display:flex; align-items:center; gap:8px; font-size:12.5px; margin-bottom:7px;}
+.bar-row .bar-lbl{width:76px; flex-shrink:0; color:var(--ink-700); font-weight:600;}
+.bar-track{flex:1; height:8px; background:var(--surface-3); border-radius:99px; overflow:hidden;}
+.bar-fill{height:100%; background:var(--teal-500); border-radius:99px;}
+.bar-val{width:52px; text-align:right; flex-shrink:0; font-weight:700;}
+
+/* ===== Photo grid ===== */
+.photo-grid{display:grid; grid-template-columns:1fr 1fr; gap:8px;}
+.photo-slot{
+  aspect-ratio:1; border-radius:var(--radius-sm); background:var(--surface-3); overflow:hidden; position:relative;
+  display:flex; align-items:center; justify-content:center; color:var(--ink-500); font-size:12px; text-align:center;
+}
+.photo-slot img{width:100%; height:100%; object-fit:cover;}
+.photo-slot .rm{
+  position:absolute; top:4px; right:4px; width:24px; height:24px; border-radius:50%; background:rgba(0,0,0,.55);
+  color:#fff; border:none; display:flex; align-items:center; justify-content:center; font-size:13px;
+}
+
+/* ===== Loading ===== */
+#loading{position:fixed; inset:0; background:var(--teal-900); z-index:500; display:flex; align-items:center; justify-content:center; color:#fff; flex-direction:column; gap:12px;}
+.spinner{width:34px; height:34px; border:3px solid rgba(255,255,255,.3); border-top-color:#fff; border-radius:50%; animation:spin .7s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg);}}
+
+/* ===== Print / report ===== */
+.report-page{max-width:640px; margin:0 auto; background:#fff;}
+.report-brand{text-align:center; padding:20px 0 10px;}
+.report-brand .name{font-size:20px; font-weight:800; color:var(--teal-700);}
+@media print{
+  nav.bottomnav,.fab,header.topbar,.no-print{display:none !important;}
+  #app{padding-bottom:0;}
+  body{background:#fff;}
+}
+
+@media (min-width:720px){
+  main{max-width:640px; margin:0 auto; width:100%;}
+  header.topbar > div.inner{max-width:640px; margin:0 auto; width:100%; display:flex; align-items:center; gap:10px;}
+  .fab{right:calc(50% - 320px + 18px);}
+}
+</style>
+</head>
+<body>
+
+<div id="loading"><div class="spinner"></div><div>Loading Fetch A Groomer…</div></div>
+
+<div id="app" class="hidden">
+  <header class="topbar" id="topbar"></header>
+  <main id="main"></main>
+  <button class="fab hidden" id="fab">＋</button>
+  <nav class="bottomnav" id="bottomnav"></nav>
+</div>
+
+<div id="modalRoot"></div>
+<div id="toast"></div>
+
+<script type="module">
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+/* ===================================================================
+   Fetch A Groomer — Grooming Tracker
+   Single-user, no-login PWA backed by Supabase.
+   =================================================================== */
+
+/* ---------- CONFIG ---------- */
+const CFG = {
+  url: "https://injpmtfowinwfjfuersk.supabase.co",
+  key: "sb_publishable_BeRKDY2DIUwqiQFp7BxbRA_6gbaVS-g",
+};
+const sb = createClient(CFG.url, CFG.key);
+const BUCKET = "visit-photos";
+
+/* ---------- STATE ---------- */
+const DB = {
+  clients: [], pets: [], services: [], appointments: [],
+  appointmentServices: [], payments: [], visitReports: [], visitReportPhotos: [],
+};
+const UI = {
+  tab: "dashboard",
+  calMode: "month",           // month | week | day
+  calDate: startOfDay(new Date()),
+  selectedDate: startOfDay(new Date()),
+  clientSearch: "",
+  apptFilter: { status: "all", from: "", to: "", paid: "all" },
+  searchQuery: "",
+};
+
+/* ---------- SMALL HELPERS ---------- */
+function $(sel, root) { return (root || document).querySelector(sel); }
+function el(html) { const t = document.createElement("template"); t.innerHTML = html.trim(); return t.content.firstElementChild; }
+function esc(s) { return (s ?? "").toString().replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+function uid() { return crypto.randomUUID(); }
+function startOfDay(d) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
+function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
+function addWeeks(d, n) { return addDays(d, n * 7); }
+function sameDay(a, b) { return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate(); }
+function fmtDate(d) { d = new Date(d); return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }); }
+function fmtDateShort(d) { d = new Date(d); return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }); }
+function fmtDateLong(d) { d = new Date(d); return d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" }); }
+function fmtTime(d) { d = new Date(d); return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }); }
+function fmtMoney(n) { n = Number(n || 0); return "$" + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+function toDatetimeLocal(d) {
+  const x = new Date(d); const p = n => String(n).padStart(2, "0");
+  return `${x.getFullYear()}-${p(x.getMonth() + 1)}-${p(x.getDate())}T${p(x.getHours())}:${p(x.getMinutes())}`;
+}
+function initials(name) {
+  return (name || "?").trim().split(/\s+/).slice(0, 2).map(w => w[0] ? w[0].toUpperCase() : "").join("");
+}
+
+let toastTimer;
+function toast(msg) {
+  const t = $("#toast"); t.textContent = msg; t.classList.add("show");
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("show"), 2400);
+}
+
+function setLoading(on) {
+  const l = $("#loading");
+  if (on) l.classList.remove("hidden"); else l.classList.add("hidden");
+}
+
+/* ---------- MODAL / BOTTOM SHEET ---------- */
+function openSheet(title, bodyHtml, opts) {
+  opts = opts || {};
+  const root = $("#modalRoot");
+  root.innerHTML = "";
+  const overlay = el(`<div class="overlay">
+    <div class="sheet" role="dialog" aria-modal="true">
+      <div class="sheet-drag"></div>
+      <div class="sheet-header">
+        <h2>${esc(title)}</h2>
+        <button class="icon-btn" data-close-sheet style="background:var(--surface-3);color:var(--ink-700)">✕</button>
+      </div>
+      <div class="sheet-body">${bodyHtml}</div>
+    </div>
+  </div>`);
+  root.appendChild(overlay);
+  requestAnimationFrame(() => overlay.classList.add("open"));
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay || e.target.closest("[data-close-sheet]")) closeSheet();
+  });
+  if (opts.onOpen) opts.onOpen(overlay);
+  return overlay;
+}
+function closeSheet() {
+  const overlay = $("#modalRoot .overlay");
+  if (!overlay) return;
+  overlay.classList.remove("open");
+  // Only clear modalRoot if a newer sheet hasn't already replaced this one
+  // in the meantime (e.g. closeSheet() immediately followed by a re-open).
+  setTimeout(() => { if ($("#modalRoot .overlay") === overlay) $("#modalRoot").innerHTML = ""; }, 200);
+}
+function confirmDialog(msg, onYes) {
+  openSheet("Please confirm", `
+    <p style="margin-bottom:18px;">${esc(msg)}</p>
+    <div class="btn-row">
+      <button class="btn btn-secondary" data-close-sheet>Cancel</button>
+      <button class="btn btn-danger" id="confirmYesBtn">Yes, continue</button>
+    </div>
+  `);
+  $("#confirmYesBtn").addEventListener("click", () => { closeSheet(); onYes(); });
+}
+
+/* ---------- DATA LOADING ---------- */
+async function loadAll() {
+  const [clients, pets, services, appointments, appointmentServices, payments, visitReports, visitReportPhotos] = await Promise.all([
+    sb.from("clients").select("*").order("name"),
+    sb.from("pets").select("*").order("name"),
+    sb.from("services").select("*").order("sort_order"),
+    sb.from("appointments").select("*").order("scheduled_at"),
+    sb.from("appointment_services").select("*"),
+    sb.from("payments").select("*"),
+    sb.from("visit_reports").select("*"),
+    sb.from("visit_report_photos").select("*"),
+  ]);
+  for (const [name, res] of Object.entries({ clients, pets, services, appointments, appointmentServices, payments, visitReports, visitReportPhotos })) {
+    if (res.error) { console.error(name, res.error); toast("Couldn't load " + name); }
+  }
+  DB.clients = clients.data || [];
+  DB.pets = pets.data || [];
+  DB.services = services.data || [];
+  DB.appointments = appointments.data || [];
+  DB.appointmentServices = appointmentServices.data || [];
+  DB.payments = payments.data || [];
+  DB.visitReports = visitReports.data || [];
+  DB.visitReportPhotos = visitReportPhotos.data || [];
+}
+
+/* ---------- LOOKUP HELPERS ---------- */
+function getClient(id) { return DB.clients.find(c => c.id === id); }
+function getPet(id) { return DB.pets.find(p => p.id === id); }
+function petsForClient(id) { return DB.pets.filter(p => p.client_id === id); }
+function apptsForPet(id) { return DB.appointments.filter(a => a.pet_id === id).sort((a, b) => new Date(b.scheduled_at) - new Date(a.scheduled_at)); }
+function apptsForClient(id) { return DB.appointments.filter(a => a.client_id === id).sort((a, b) => new Date(b.scheduled_at) - new Date(a.scheduled_at)); }
+function servicesForAppt(id) { return DB.appointmentServices.filter(s => s.appointment_id === id); }
+function paymentForAppt(id) { return DB.payments.find(p => p.appointment_id === id); }
+function reportForAppt(id) { return DB.visitReports.find(r => r.appointment_id === id); }
+function photosForReport(id) { return DB.visitReportPhotos.filter(p => p.visit_report_id === id); }
+function apptTotal(id) { return servicesForAppt(id).reduce((s, x) => s + Number(x.price || 0), 0); }
+function priceForPetSize(service, pet) {
+  const key = "price_" + (pet ? pet.size : "medium");
+  const v = service[key];
+  return (v === null || v === undefined || v === "") ? Number(service.base_price || 0) : Number(v);
+}
+
+/* ---------- SHELL: TOPBAR + BOTTOM NAV ---------- */
+const TABS = [
+  { id: "dashboard", label: "Home", icon: "🏠" },
+  { id: "calendar", label: "Calendar", icon: "📅" },
+  { id: "clients", label: "Clients", icon: "🐾" },
+  { id: "services", label: "Services", icon: "✂️" },
+  { id: "search", label: "Search", icon: "🔎" },
+];
+const TAB_TITLES = { dashboard: "Fetch A Groomer", calendar: "Calendar", clients: "Clients & Pets", services: "Services & Pricing", search: "Search" };
+
+function renderShell() {
+  $("#bottomnav").innerHTML = TABS.map(t => `
+    <button data-tab="${t.id}" class="${UI.tab === t.id ? "active" : ""}">
+      <span class="ic">${t.icon}</span>${t.label}
+    </button>
+  `).join("");
+  $("#bottomnav").querySelectorAll("button").forEach(b => b.addEventListener("click", () => setTab(b.dataset.tab)));
+
+  $("#topbar").innerHTML = `<div class="inner" style="display:flex;align-items:center;gap:10px;width:100%;">
+    <h1>${esc(TAB_TITLES[UI.tab])}</h1>
+    ${UI.tab === "clients" ? `<button class="icon-btn" id="topAddClientBtn">＋</button>` : ""}
+    ${UI.tab === "services" ? `<button class="icon-btn" id="topAddServiceBtn">＋</button>` : ""}
+  </div>`;
+  const addClientBtn = $("#topAddClientBtn"); if (addClientBtn) addClientBtn.addEventListener("click", () => openClientForm());
+  const addServiceBtn = $("#topAddServiceBtn"); if (addServiceBtn) addServiceBtn.addEventListener("click", () => openServiceForm());
+
+  const fab = $("#fab");
+  if (UI.tab === "calendar" || UI.tab === "dashboard") {
+    fab.classList.remove("hidden");
+    fab.onclick = () => openAppointmentForm();
+  } else {
+    fab.classList.add("hidden");
+  }
+}
+
+function setTab(tab) {
+  UI.tab = tab;
+  renderShell();
+  render();
+  $("#main").scrollTop = 0;
+  window.scrollTo(0, 0);
+}
+
+/* ---------- MAIN RENDER DISPATCH ---------- */
+function render() {
+  const main = $("#main");
+  if (UI.tab === "dashboard") main.innerHTML = renderDashboard();
+  else if (UI.tab === "calendar") main.innerHTML = renderCalendarView();
+  else if (UI.tab === "clients") main.innerHTML = renderClientsView();
+  else if (UI.tab === "services") main.innerHTML = renderServicesView();
+  else if (UI.tab === "search") main.innerHTML = renderSearchView();
+  bindViewEvents();
+}
+
+/* =====================================================================
+   DASHBOARD
+   ===================================================================== */
+const PAYMENT_METHOD_LABEL = { cash: "Cash", check: "Check", card: "Card", venmo: "Venmo", cashapp: "Cash App", zelle: "Zelle", other: "Other" };
+
+function revenueBetween(from, to) {
+  const paidAppts = DB.payments.filter(p => p.paid && p.paid_at && new Date(p.paid_at) >= from && new Date(p.paid_at) < to);
+  return paidAppts.reduce((s, p) => s + Number(p.amount || 0), 0);
+}
+function revenueByMethodBetween(from, to) {
+  const map = {};
+  DB.payments.filter(p => p.paid && p.paid_at && new Date(p.paid_at) >= from && new Date(p.paid_at) < to)
+    .forEach(p => { map[p.method] = (map[p.method] || 0) + Number(p.amount || 0); });
+  return map;
+}
+function outstandingBalances() {
+  return DB.appointments
+    .filter(a => a.status !== "cancelled")
+    .map(a => {
+      const total = apptTotal(a.id);
+      const pay = paymentForAppt(a.id);
+      const paidAmt = pay && pay.paid ? Number(pay.amount || 0) : 0;
+      const due = total - paidAmt;
+      return { appt: a, total, due };
+    })
+    .filter(x => x.due > 0.004 && x.total > 0)
+    .sort((a, b) => new Date(a.appt.scheduled_at) - new Date(b.appt.scheduled_at));
+}
+function repeatClients() {
+  const counts = {};
+  DB.appointments.filter(a => a.status === "completed").forEach(a => { counts[a.client_id] = (counts[a.client_id] || 0) + 1; });
+  return Object.entries(counts)
+    .map(([clientId, count]) => ({ client: getClient(clientId), count, last: apptsForClient(clientId)[0] }))
+    .filter(x => x.client)
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 6);
+}
+
+function renderDashboard() {
+  const now = new Date();
+  const startWeek = addDays(startOfDay(now), -now.getDay());
+  const startMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  const endMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+  const nextWeek = addDays(startOfDay(now), 7);
+
+  const period = UI.dashPeriod || "month";
+  const pFrom = period === "week" ? startWeek : startMonth;
+  const pTo = period === "week" ? addDays(startWeek, 7) : endMonth;
+  const periodRevenue = revenueBetween(pFrom, pTo);
+  const byMethod = revenueByMethodBetween(pFrom, pTo);
+  const maxMethod = Math.max(1, ...Object.values(byMethod));
+
+  const outstanding = outstandingBalances();
+  const outstandingTotal = outstanding.reduce((s, x) => s + x.due, 0);
+
+  const upcoming = DB.appointments
+    .filter(a => a.status === "scheduled" && new Date(a.scheduled_at) >= now)
+    .sort((a, b) => new Date(a.scheduled_at) - new Date(b.scheduled_at))
+    .slice(0, 5);
+
+  const repeats = repeatClients();
+
+  return `
+    <div class="stat-grid" style="margin-bottom:6px;">
+      <div class="stat-tile"><div class="val">${fmtMoney(revenueBetween(startWeek, addDays(startWeek, 7)))}</div><div class="lbl">This week's revenue</div></div>
+      <div class="stat-tile"><div class="val">${fmtMoney(revenueBetween(startMonth, endMonth))}</div><div class="lbl">This month's revenue</div></div>
+      <div class="stat-tile"><div class="val" style="color:${outstandingTotal > 0 ? "var(--orange-600)" : "var(--ink-900)"}">${fmtMoney(outstandingTotal)}</div><div class="lbl">Outstanding balance</div></div>
+      <div class="stat-tile"><div class="val">${upcoming.length}</div><div class="lbl">Upcoming (next visits)</div></div>
+    </div>
+
+    <div class="section-title">Revenue by payment method</div>
+    <div class="card">
+      <div class="segmented" style="margin-bottom:14px;">
+        <button data-dash-period="week" class="${period === "week" ? "active" : ""}">This week</button>
+        <button data-dash-period="month" class="${period === "month" ? "active" : ""}">This month</button>
+      </div>
+      <div class="row between" style="margin-bottom:10px;">
+        <span class="muted small">Total collected</span><span class="bold">${fmtMoney(periodRevenue)}</span>
+      </div>
+      ${Object.keys(byMethod).length === 0 ? `<p class="muted small">No paid invoices in this period yet.</p>` :
+        Object.entries(byMethod).sort((a, b) => b[1] - a[1]).map(([method, amt]) => `
+          <div class="bar-row">
+            <div class="bar-lbl">${esc(PAYMENT_METHOD_LABEL[method] || method)}</div>
+            <div class="bar-track"><div class="bar-fill" style="width:${(amt / maxMethod * 100).toFixed(0)}%"></div></div>
+            <div class="bar-val">${fmtMoney(amt)}</div>
+          </div>
+        `).join("")}
+    </div>
+
+    <div class="section-title">Outstanding balances</div>
+    ${outstanding.length === 0 ? `<div class="card empty"><div class="ic">✅</div>All invoices are paid up.</div>` :
+      outstanding.slice(0, 8).map(x => {
+        const pet = getPet(x.appt.pet_id), client = getClient(x.appt.client_id);
+        return `<div class="card tap" data-open-appt="${x.appt.id}">
+          <div class="row between">
+            <div>
+              <div class="bold">${esc(pet ? pet.name : "Pet")} <span class="muted small">— ${esc(client ? client.name : "")}</span></div>
+              <div class="tiny muted">${fmtDate(x.appt.scheduled_at)}</div>
+            </div>
+            <div class="pill unpaid">${fmtMoney(x.due)} due</div>
+          </div>
+        </div>`;
+      }).join("")}
+
+    <div class="section-title">Upcoming appointments</div>
+    ${upcoming.length === 0 ? `<div class="card empty"><div class="ic">📭</div>Nothing scheduled yet.</div>` :
+      upcoming.map(a => {
+        const pet = getPet(a.pet_id), client = getClient(a.client_id);
+        return `<div class="card tap" data-open-appt="${a.id}">
+          <div class="row between">
+            <div>
+              <div class="bold">${esc(pet ? pet.name : "Pet")} <span class="muted small">— ${esc(client ? client.name : "")}</span></div>
+              <div class="tiny muted">${fmtDate(a.scheduled_at)} · ${fmtTime(a.scheduled_at)}</div>
+            </div>
+            <span class="pill scheduled">Scheduled</span>
+          </div>
+        </div>`;
+      }).join("")}
+
+    <div class="section-title">Repeat clients</div>
+    ${repeats.length === 0 ? `<div class="card empty"><div class="ic">🔁</div>Complete a few visits to see your regulars here.</div>` :
+      `<div class="card">` + repeats.map((r, i) => `
+        <div class="row between" style="padding:8px 0;${i > 0 ? "border-top:1px solid var(--border);" : ""}">
+          <div class="row" style="gap:10px;">
+            <div class="avatar">${esc(initials(r.client.name))}</div>
+            <div>
+              <div class="bold small">${esc(r.client.name)}</div>
+              <div class="tiny muted">Last visit ${r.last ? fmtDateShort(r.last.scheduled_at) : "—"}</div>
+            </div>
+          </div>
+          <div class="pill">${r.count} visits</div>
+        </div>
+      `).join("") + `</div>`}
+  `;
+}
+
+function bindDashboardEvents() {
+  document.querySelectorAll("[data-dash-period]").forEach(b => b.addEventListener("click", () => { UI.dashPeriod = b.dataset.dashPeriod; render(); }));
+  document.querySelectorAll("[data-open-appt]").forEach(b => b.addEventListener("click", () => openAppointmentDetail(b.dataset.openAppt)));
+}
+
+/* =====================================================================
+   CLIENTS & PETS
+   ===================================================================== */
+function renderClientsView() {
+  const q = (UI.clientSearch || "").trim().toLowerCase();
+  let clients = DB.clients.slice().sort((a, b) => a.name.localeCompare(b.name));
+  if (q) clients = clients.filter(c => c.name.toLowerCase().includes(q) || petsForClient(c.id).some(p => p.name.toLowerCase().includes(q)));
+
+  return `
+    <div class="searchbar">
+      <span>🔎</span>
+      <input type="text" id="clientSearchInput" placeholder="Search clients or pets…" value="${esc(UI.clientSearch)}">
+    </div>
+    ${clients.length === 0 ? `<div class="card empty"><div class="ic">🐕</div>${q ? "No matches." : "No clients yet. Tap + to add your first one."}</div>` :
+      clients.map(c => {
+        const pets = petsForClient(c.id);
+        return `<div class="card tap" data-open-client="${c.id}">
+          <div class="row" style="gap:12px;">
+            <div class="avatar">${esc(initials(c.name))}</div>
+            <div style="flex:1;min-width:0;">
+              <div class="bold">${esc(c.name)}</div>
+              <div class="small muted">${pets.length ? pets.map(p => esc(p.name)).join(", ") : "No pets added"}</div>
+              ${c.phone ? `<div class="tiny muted">${esc(c.phone)}</div>` : ""}
+            </div>
+          </div>
+        </div>`;
+      }).join("")}
+  `;
+}
+function bindClientsEvents() {
+  const input = $("#clientSearchInput");
+  if (input) input.addEventListener("input", () => { UI.clientSearch = input.value; render(); positionCaretEnd(input); });
+  document.querySelectorAll("[data-open-client]").forEach(b => b.addEventListener("click", () => openClientDetail(b.dataset.openClient)));
+}
+function positionCaretEnd(input) { const v = input.value; input.focus(); input.setSelectionRange(v.length, v.length); }
+
+function openClientForm(client) {
+  const isEdit = !!client;
+  openSheet(isEdit ? "Edit Client" : "New Client", `
+    <div class="field"><label>Full name *</label><input type="text" id="cName" value="${esc(client?.name || "")}" placeholder="Jane Smith"></div>
+    <div class="field"><label>Phone</label><input type="tel" id="cPhone" value="${esc(client?.phone || "")}" placeholder="(555) 555-1234"></div>
+    <div class="field"><label>Email</label><input type="email" id="cEmail" value="${esc(client?.email || "")}" placeholder="jane@email.com"></div>
+    <div class="field"><label>Address</label><textarea id="cAddress" placeholder="123 Main St, Springfield">${esc(client?.address || "")}</textarea></div>
+    <div class="field"><label>Notes</label><textarea id="cNotes" placeholder="Gate code, parking notes, preferences…">${esc(client?.notes || "")}</textarea></div>
+    <div class="btn-row">
+      ${isEdit ? `<button class="btn btn-danger" id="cDeleteBtn">Delete</button>` : ""}
+      <button class="btn btn-primary" id="cSaveBtn">${isEdit ? "Save changes" : "Add client"}</button>
+    </div>
+  `);
+  $("#cSaveBtn").addEventListener("click", async () => {
+    const name = $("#cName").value.trim();
+    if (!name) { toast("Name is required"); return; }
+    const payload = {
+      name, phone: $("#cPhone").value.trim(), email: $("#cEmail").value.trim(),
+      address: $("#cAddress").value.trim(), notes: $("#cNotes").value.trim(),
+      updated_at: new Date().toISOString(),
+    };
+    let error;
+    if (isEdit) { ({ error } = await sb.from("clients").update(payload).eq("id", client.id)); }
+    else { ({ error } = await sb.from("clients").insert(payload)); }
+    if (error) { console.error(error); toast("Save failed"); return; }
+    await loadAll(); closeSheet(); render(); toast(isEdit ? "Client updated" : "Client added");
+  });
+  const delBtn = $("#cDeleteBtn");
+  if (delBtn) delBtn.addEventListener("click", () => {
+    confirmDialog(`Delete ${client.name} and all their pets, appointments, and history? This can't be undone.`, async () => {
+      const { error } = await sb.from("clients").delete().eq("id", client.id);
+      if (error) { toast("Delete failed"); return; }
+      await loadAll(); setTab("clients"); toast("Client deleted");
+    });
+  });
+}
+
+function openClientDetail(clientId) {
+  const client = getClient(clientId);
+  if (!client) return;
+  const pets = petsForClient(clientId);
+  const appts = apptsForClient(clientId);
+  const body = `
+    <div class="row between" style="margin-bottom:10px;">
+      <div>
+        ${client.phone ? `<div class="row small muted" style="gap:6px;">📞 ${esc(client.phone)}</div>` : ""}
+        ${client.email ? `<div class="row small muted" style="gap:6px;">✉️ ${esc(client.email)}</div>` : ""}
+        ${client.address ? `<div class="row small muted" style="gap:6px;">📍 ${esc(client.address)}</div>` : ""}
+      </div>
+      <button class="btn btn-outline btn-sm" id="editClientBtn">Edit</button>
+    </div>
+    ${client.notes ? `<div class="card small" style="background:var(--surface-3);box-shadow:none;">${esc(client.notes)}</div>` : ""}
+
+    <div class="row between" style="margin-top:16px;"><div class="section-title" style="margin:0;">Pets</div><button class="btn btn-outline btn-sm" id="addPetBtn">+ Add pet</button></div>
+    ${pets.length === 0 ? `<div class="card empty small">No pets yet.</div>` :
+      pets.map(p => `<div class="card tap" data-open-pet="${p.id}">
+        <div class="row between">
+          <div><div class="bold">${esc(p.name)}</div><div class="small muted">${esc(p.breed || "Mixed breed")} · ${esc(cap(p.size))}</div></div>
+          <span style="font-size:20px;">🐾</span>
+        </div>
+      </div>`).join("")}
+
+    <div class="section-title">Visit history</div>
+    ${appts.length === 0 ? `<div class="card empty small">No appointments yet.</div>` :
+      appts.slice(0, 15).map(a => renderApptMiniRow(a)).join("")}
+  `;
+  const overlay = openSheet(client.name, body);
+  $("#editClientBtn").addEventListener("click", () => openClientForm(client));
+  $("#addPetBtn").addEventListener("click", () => openPetForm(null, clientId));
+  overlay.querySelectorAll("[data-open-pet]").forEach(b => b.addEventListener("click", () => openPetDetail(b.dataset.openPet)));
+  overlay.querySelectorAll("[data-open-appt]").forEach(b => b.addEventListener("click", () => openAppointmentDetail(b.dataset.openAppt)));
+}
+function cap(s) { return s ? s[0].toUpperCase() + s.slice(1) : ""; }
+function renderApptMiniRow(a) {
+  const pet = getPet(a.pet_id);
+  const pay = paymentForAppt(a.id);
+  const total = apptTotal(a.id);
+  return `<div class="card tap" data-open-appt="${a.id}">
+    <div class="row between">
+      <div>
+        <div class="bold small">${esc(pet ? pet.name : "")} <span class="pill ${a.status}">${STATUS_LABEL[a.status]}</span></div>
+        <div class="tiny muted">${fmtDate(a.scheduled_at)} · ${fmtTime(a.scheduled_at)}</div>
+      </div>
+      <div style="text-align:right;">
+        <div class="bold small">${fmtMoney(total)}</div>
+        ${total > 0 ? `<span class="pill ${pay && pay.paid ? "paid" : "unpaid"}">${pay && pay.paid ? "Paid" : "Unpaid"}</span>` : ""}
+      </div>
+    </div>
+  </div>`;
+}
+const STATUS_LABEL = { scheduled: "Scheduled", completed: "Completed", cancelled: "Cancelled", no_show: "No-show" };
+
+/* ---------- PET FORM & DETAIL ---------- */
+function openPetForm(pet, clientId) {
+  const isEdit = !!pet;
+  clientId = clientId || pet.client_id;
+  openSheet(isEdit ? "Edit Pet" : "New Pet", `
+    <div class="field"><label>Pet name *</label><input type="text" id="pName" value="${esc(pet?.name || "")}" placeholder="Bella"></div>
+    <div class="field-row">
+      <div class="field"><label>Breed</label><input type="text" id="pBreed" value="${esc(pet?.breed || "")}" placeholder="Goldendoodle"></div>
+      <div class="field"><label>Size</label>
+        <select id="pSize">
+          ${["small", "medium", "large", "xlarge"].map(s => `<option value="${s}" ${pet?.size === s ? "selected" : ""}>${cap(s)}</option>`).join("")}
+        </select>
+      </div>
+    </div>
+    <div class="field"><label>Coat type</label><input type="text" id="pCoat" value="${esc(pet?.coat_type || "")}" placeholder="Curly, double coat, wiry…"></div>
+    <div class="field"><label>Temperament / behavior notes</label><textarea id="pTemperament" placeholder="Nervous around dryers, loves treats, muzzle needed for nails…">${esc(pet?.temperament || "")}</textarea></div>
+    <div class="field"><label>Allergies</label><textarea id="pAllergies" placeholder="Chicken-based shampoo, flea treatment…">${esc(pet?.allergies || "")}</textarea></div>
+    <div class="field"><label>Medical notes</label><textarea id="pMedical" placeholder="Hip dysplasia, seizure history, medications…">${esc(pet?.medical_notes || "")}</textarea></div>
+    <div class="field-row">
+      <div class="field"><label>Vet name</label><input type="text" id="pVetName" value="${esc(pet?.vet_name || "")}"></div>
+      <div class="field"><label>Vet phone</label><input type="tel" id="pVetPhone" value="${esc(pet?.vet_phone || "")}"></div>
+    </div>
+    <div class="btn-row">
+      ${isEdit ? `<button class="btn btn-danger" id="pDeleteBtn">Delete</button>` : ""}
+      <button class="btn btn-primary" id="pSaveBtn">${isEdit ? "Save changes" : "Add pet"}</button>
+    </div>
+  `);
+  $("#pSaveBtn").addEventListener("click", async () => {
+    const name = $("#pName").value.trim();
+    if (!name) { toast("Pet name is required"); return; }
+    const payload = {
+      client_id: clientId, name, breed: $("#pBreed").value.trim(), size: $("#pSize").value,
+      coat_type: $("#pCoat").value.trim(), temperament: $("#pTemperament").value.trim(),
+      allergies: $("#pAllergies").value.trim(), medical_notes: $("#pMedical").value.trim(),
+      vet_name: $("#pVetName").value.trim(), vet_phone: $("#pVetPhone").value.trim(),
+      updated_at: new Date().toISOString(),
+    };
+    let error;
+    if (isEdit) { ({ error } = await sb.from("pets").update(payload).eq("id", pet.id)); }
+    else { ({ error } = await sb.from("pets").insert(payload)); }
+    if (error) { console.error(error); toast("Save failed"); return; }
+    await loadAll(); closeSheet();
+    if (UI.tab === "clients") render();
+    openClientDetail(clientId);
+    toast(isEdit ? "Pet updated" : "Pet added");
+  });
+  const delBtn = $("#pDeleteBtn");
+  if (delBtn) delBtn.addEventListener("click", () => {
+    confirmDialog(`Delete ${pet.name} and all their appointment history?`, async () => {
+      const { error } = await sb.from("pets").delete().eq("id", pet.id);
+      if (error) { toast("Delete failed"); return; }
+      await loadAll(); closeSheet(); openClientDetail(clientId); toast("Pet deleted");
+    });
+  });
+}
+
+function openPetDetail(petId) {
+  const pet = getPet(petId);
+  if (!pet) return;
+  const client = getClient(pet.client_id);
+  const appts = apptsForPet(petId);
+  const body = `
+    <div class="row between" style="margin-bottom:10px;">
+      <div class="small muted">${esc(client ? client.name : "")} · ${esc(pet.breed || "Mixed breed")} · ${esc(cap(pet.size))}</div>
+      <button class="btn btn-outline btn-sm" id="editPetBtn">Edit</button>
+    </div>
+    <div class="stack">
+      ${pet.coat_type ? infoRow("Coat", pet.coat_type) : ""}
+      ${pet.temperament ? infoRow("Temperament", pet.temperament) : ""}
+      ${pet.allergies ? infoRow("Allergies", pet.allergies, true) : ""}
+      ${pet.medical_notes ? infoRow("Medical notes", pet.medical_notes, true) : ""}
+      ${pet.vet_name ? infoRow("Vet", `${pet.vet_name}${pet.vet_phone ? " · " + pet.vet_phone : ""}`) : ""}
+    </div>
+    <div class="row between" style="margin-top:16px;">
+      <div class="section-title" style="margin:0;">Visit history</div>
+      <button class="btn btn-outline btn-sm" id="petAddApptBtn">+ Schedule</button>
+    </div>
+    ${appts.length === 0 ? `<div class="card empty small">No appointments yet.</div>` : appts.map(a => renderApptMiniRow(a)).join("")}
+  `;
+  const overlay = openSheet(pet.name, body);
+  $("#editPetBtn").addEventListener("click", () => openPetForm(pet, pet.client_id));
+  $("#petAddApptBtn").addEventListener("click", () => openAppointmentForm(null, { petId: pet.id, clientId: pet.client_id }));
+  overlay.querySelectorAll("[data-open-appt]").forEach(b => b.addEventListener("click", () => openAppointmentDetail(b.dataset.openAppt)));
+}
+function infoRow(label, value, warn) {
+  return `<div class="card small" style="box-shadow:none;background:${warn ? "var(--orange-100)" : "var(--surface-3)"};">
+    <div class="tiny bold" style="text-transform:uppercase;letter-spacing:.03em;color:${warn ? "var(--orange-600)" : "var(--ink-500)"};margin-bottom:3px;">${esc(label)}</div>
+    <div>${esc(value)}</div>
+  </div>`;
+}
+
+/* =====================================================================
+   SERVICES & PRICING
+   ===================================================================== */
+function renderServicesView() {
+  const services = DB.services.slice().sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name));
+  return `
+    ${services.length === 0 ? `<div class="card empty"><div class="ic">✂️</div>No services yet. Tap + to add one.</div>` :
+      services.map(s => `<div class="card tap ${s.active ? "" : "small"}" data-open-service="${s.id}" style="${s.active ? "" : "opacity:.55;"}">
+        <div class="row between">
+          <div>
+            <div class="bold">${esc(s.name)}${s.active ? "" : " (inactive)"}</div>
+            ${s.description ? `<div class="small muted">${esc(s.description)}</div>` : ""}
+            ${hasSizePricing(s) ? `<div class="tiny muted">Priced by pet size</div>` : ""}
+          </div>
+          <div class="bold">${fmtMoney(s.base_price)}</div>
+        </div>
+      </div>`).join("")}
+  `;
+}
+function hasSizePricing(s) { return [s.price_small, s.price_medium, s.price_large, s.price_xlarge].some(v => v !== null && v !== undefined && v !== ""); }
+function bindServicesEvents() {
+  document.querySelectorAll("[data-open-service]").forEach(b => b.addEventListener("click", () => openServiceForm(DB.services.find(s => s.id === b.dataset.openService))));
+}
+
+function openServiceForm(service) {
+  const isEdit = !!service;
+  openSheet(isEdit ? "Edit Service" : "New Service", `
+    <div class="field"><label>Service name *</label><input type="text" id="sName" value="${esc(service?.name || "")}" placeholder="Full Groom"></div>
+    <div class="field"><label>Description</label><input type="text" id="sDesc" value="${esc(service?.description || "")}" placeholder="Bath, haircut, nail trim…"></div>
+    <div class="field"><label>Base price *</label><input type="number" step="0.01" min="0" id="sBasePrice" value="${service?.base_price ?? ""}" placeholder="65.00"></div>
+    <div class="checkrow"><input type="checkbox" id="sVaryBySize" ${hasSizePricing(service || {}) ? "checked" : ""}> <label for="sVaryBySize" style="margin:0;font-weight:600;font-size:13.5px;">Vary price by pet size</label></div>
+    <div id="sSizeFields" class="${hasSizePricing(service || {}) ? "" : "hidden"}">
+      <div class="field-row">
+        <div class="field"><label>Small</label><input type="number" step="0.01" min="0" id="sSmall" value="${service?.price_small ?? ""}"></div>
+        <div class="field"><label>Medium</label><input type="number" step="0.01" min="0" id="sMedium" value="${service?.price_medium ?? ""}"></div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Large</label><input type="number" step="0.01" min="0" id="sLarge" value="${service?.price_large ?? ""}"></div>
+        <div class="field"><label>X-Large</label><input type="number" step="0.01" min="0" id="sXLarge" value="${service?.price_xlarge ?? ""}"></div>
+      </div>
+    </div>
+    <div class="checkrow"><input type="checkbox" id="sActive" ${service?.active !== false ? "checked" : ""}> <label for="sActive" style="margin:0;font-weight:600;font-size:13.5px;">Active (shows when booking)</label></div>
+    <div class="btn-row">
+      ${isEdit ? `<button class="btn btn-danger" id="sDeleteBtn">Delete</button>` : ""}
+      <button class="btn btn-primary" id="sSaveBtn">${isEdit ? "Save changes" : "Add service"}</button>
+    </div>
+  `);
+  $("#sVaryBySize").addEventListener("change", (e) => $("#sSizeFields").classList.toggle("hidden", !e.target.checked));
+  $("#sSaveBtn").addEventListener("click", async () => {
+    const name = $("#sName").value.trim();
+    const basePrice = parseFloat($("#sBasePrice").value);
+    if (!name || isNaN(basePrice)) { toast("Name and base price are required"); return; }
+    const vary = $("#sVaryBySize").checked;
+    const numOrNull = (v) => v === "" ? null : parseFloat(v);
+    const payload = {
+      name, description: $("#sDesc").value.trim(), base_price: basePrice, active: $("#sActive").checked,
+      price_small: vary ? numOrNull($("#sSmall").value) : null,
+      price_medium: vary ? numOrNull($("#sMedium").value) : null,
+      price_large: vary ? numOrNull($("#sLarge").value) : null,
+      price_xlarge: vary ? numOrNull($("#sXLarge").value) : null,
+    };
+    if (!isEdit) payload.sort_order = DB.services.length;
+    let error;
+    if (isEdit) { ({ error } = await sb.from("services").update(payload).eq("id", service.id)); }
+    else { ({ error } = await sb.from("services").insert(payload)); }
+    if (error) { console.error(error); toast("Save failed"); return; }
+    await loadAll(); closeSheet(); render(); toast(isEdit ? "Service updated" : "Service added");
+  });
+  const delBtn = $("#sDeleteBtn");
+  if (delBtn) delBtn.addEventListener("click", () => {
+    confirmDialog(`Delete "${service.name}"? Past appointments keep their recorded service name and price.`, async () => {
+      const { error } = await sb.from("services").delete().eq("id", service.id);
+      if (error) { toast("Delete failed"); return; }
+      await loadAll(); closeSheet(); render(); toast("Service deleted");
+    });
+  });
+}
+
+/* =====================================================================
+   CALENDAR & APPOINTMENTS
+   ===================================================================== */
+function apptsOnDay(date) {
+  return DB.appointments.filter(a => sameDay(new Date(a.scheduled_at), date) && a.status !== "cancelled")
+    .sort((a, b) => new Date(a.scheduled_at) - new Date(b.scheduled_at));
+}
+function monthLabel(d) { return d.toLocaleDateString(undefined, { month: "long", year: "numeric" }); }
+
+function renderCalendarView() {
+  const mode = UI.calMode;
+  return `
+    <div class="segmented" style="margin-bottom:12px;">
+      <button data-cal-mode="month" class="${mode === "month" ? "active" : ""}">Month</button>
+      <button data-cal-mode="week" class="${mode === "week" ? "active" : ""}">Week</button>
+      <button data-cal-mode="day" class="${mode === "day" ? "active" : ""}">Day</button>
+    </div>
+    <div class="cal-header">
+      <button class="icon-btn" data-cal-nav="-1" style="background:var(--surface);box-shadow:var(--shadow);color:var(--ink-700)">‹</button>
+      <div class="label" data-cal-today>${calHeaderLabel()}</div>
+      <button class="icon-btn" data-cal-nav="1" style="background:var(--surface);box-shadow:var(--shadow);color:var(--ink-700)">›</button>
+    </div>
+    ${mode === "month" ? renderMonthGrid() : mode === "week" ? renderWeekAgenda() : renderDayAgenda()}
+  `;
+}
+function calHeaderLabel() {
+  if (UI.calMode === "month") return monthLabel(UI.calDate);
+  if (UI.calMode === "week") { const s = addDays(startOfDay(UI.calDate), -UI.calDate.getDay()); return `${fmtDateShort(s)} – ${fmtDateShort(addDays(s, 6))}`; }
+  return fmtDateLong(UI.calDate);
+}
+function renderMonthGrid() {
+  const y = UI.calDate.getFullYear(), m = UI.calDate.getMonth();
+  const first = new Date(y, m, 1);
+  const gridStart = addDays(first, -first.getDay());
+  const today = startOfDay(new Date());
+  const days = Array.from({ length: 42 }, (_, i) => addDays(gridStart, i));
+  const dow = ["S", "M", "T", "W", "T", "F", "S"];
+  return `
+    <div class="cal-grid">
+      ${dow.map(d => `<div class="cal-dow">${d}</div>`).join("")}
+      ${days.map(d => {
+        const count = apptsOnDay(d).length;
+        const cls = ["cal-day"];
+        if (d.getMonth() !== m) cls.push("other-month");
+        if (sameDay(d, today)) cls.push("today");
+        if (sameDay(d, UI.selectedDate)) cls.push("selected");
+        return `<div class="${cls.join(" ")}" data-cal-day="${d.toISOString()}">
+          <span>${d.getDate()}</span>
+          ${count ? `<div class="dots">${Array.from({ length: Math.min(count, 3) }).map(() => `<span class="dot"></span>`).join("")}</div>` : ""}
+        </div>`;
+      }).join("")}
+    </div>
+    <div class="section-title">${sameDay(UI.selectedDate, today) ? "Today" : fmtDate(UI.selectedDate)}</div>
+    ${renderAgendaList(apptsOnDay(UI.selectedDate))}
+  `;
+}
+function renderWeekAgenda() {
+  const start = addDays(startOfDay(UI.calDate), -UI.calDate.getDay());
+  const days = Array.from({ length: 7 }, (_, i) => addDays(start, i));
+  return `<div class="week-row">${days.map(d => {
+    const appts = apptsOnDay(d);
+    return `<div class="week-day-card">
+      <div class="wd-head">${fmtDate(d)}</div>
+      ${appts.length === 0 ? `<div class="tiny muted">No appointments</div>` :
+        appts.map(a => renderApptAgendaRow(a)).join("")}
+    </div>`;
+  }).join("")}</div>`;
+}
+function renderDayAgenda() { return renderAgendaList(apptsOnDay(UI.calDate)); }
+function renderAgendaList(appts) {
+  if (appts.length === 0) return `<div class="card empty small"><div class="ic">📭</div>No appointments this day.</div>`;
+  return `<div class="card">${appts.map(a => renderApptAgendaRow(a)).join("")}</div>`;
+}
+function renderApptAgendaRow(a) {
+  const pet = getPet(a.pet_id), client = getClient(a.client_id);
+  return `<div class="appt-row tap" data-open-appt="${a.id}" style="cursor:pointer;">
+    <div class="appt-time">${fmtTime(a.scheduled_at)}</div>
+    <div style="flex:1;min-width:0;">
+      <div class="bold small">${esc(pet ? pet.name : "")} <span class="muted">— ${esc(client ? client.name : "")}</span></div>
+      <div class="tiny muted">${servicesForAppt(a.id).map(s => s.service_name).join(", ") || "No services selected"}</div>
+    </div>
+    <span class="pill ${a.status}">${STATUS_LABEL[a.status]}</span>
+  </div>`;
+}
+function bindCalendarEvents() {
+  document.querySelectorAll("[data-cal-mode]").forEach(b => b.addEventListener("click", () => { UI.calMode = b.dataset.calMode; render(); }));
+  document.querySelectorAll("[data-cal-nav]").forEach(b => b.addEventListener("click", () => {
+    const dir = parseInt(b.dataset.calNav, 10);
+    if (UI.calMode === "month") UI.calDate = new Date(UI.calDate.getFullYear(), UI.calDate.getMonth() + dir, 1);
+    else if (UI.calMode === "week") UI.calDate = addWeeks(UI.calDate, dir);
+    else UI.calDate = addDays(UI.calDate, dir);
+    render();
+  }));
+  document.querySelectorAll("[data-cal-day]").forEach(b => b.addEventListener("click", () => { UI.selectedDate = new Date(b.dataset.calDay); render(); }));
+  document.querySelectorAll("[data-open-appt]").forEach(b => b.addEventListener("click", () => openAppointmentDetail(b.dataset.openAppt)));
+}
+
+/* ---------- APPOINTMENT FORM (create / edit) ---------- */
+function openAppointmentForm(appt, presetOpts) {
+  presetOpts = presetOpts || {};
+  const isEdit = !!appt;
+  const clients = DB.clients.slice().sort((a, b) => a.name.localeCompare(b.name));
+  const initialClientId = appt?.client_id || presetOpts.clientId || (clients[0] && clients[0].id) || "";
+  const initialPetId = appt?.pet_id || presetOpts.petId || "";
+  const selectedServiceIds = new Set(appt ? servicesForAppt(appt.id).map(s => s.service_id).filter(Boolean) : []);
+  const priceOverrides = {};
+  if (appt) servicesForAppt(appt.id).forEach(s => { if (s.service_id) priceOverrides[s.service_id] = s.price; });
+
+  if (clients.length === 0) {
+    openSheet("Add a client first", `<p class="muted" style="margin-bottom:16px;">You need at least one client (with a pet) before scheduling an appointment.</p>
+      <button class="btn btn-primary" id="goAddClientBtn">Add a client</button>`);
+    $("#goAddClientBtn").addEventListener("click", () => { closeSheet(); setTab("clients"); openClientForm(); });
+    return;
+  }
+
+  const activeServices = DB.services.filter(s => s.active);
+  const defaultDate = appt ? toDatetimeLocal(appt.scheduled_at) : toDatetimeLocal(new Date(UI.selectedDate.getFullYear(), UI.selectedDate.getMonth(), UI.selectedDate.getDate(), 9, 0));
+
+  const body = `
+    <div class="field"><label>Client *</label>
+      <select id="apClient">${clients.map(c => `<option value="${c.id}" ${c.id === initialClientId ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select>
+    </div>
+    <div class="field"><label>Pet *</label><select id="apPet"></select></div>
+    <div class="field-row">
+      <div class="field"><label>Date & time *</label><input type="datetime-local" id="apWhen" value="${defaultDate}"></div>
+      <div class="field"><label>Duration</label>
+        <select id="apDuration">
+          ${[30, 45, 60, 90, 120, 150].map(m => `<option value="${m}" ${(appt?.duration_minutes || 60) === m ? "selected" : ""}>${m} min</option>`).join("")}
+        </select>
+      </div>
+    </div>
+    <div class="field"><label>Services</label>
+      <div class="chip-select" id="apServiceChips">
+        ${activeServices.map(s => `<button type="button" class="chip ${selectedServiceIds.has(s.id) ? "selected" : ""}" data-service-id="${s.id}">${esc(s.name)}</button>`).join("")}
+      </div>
+    </div>
+    <div id="apServiceLines" class="stack" style="margin:10px 0;"></div>
+    <div class="row between" style="margin-bottom:14px;"><span class="small bold">Total</span><span class="bold" id="apTotalDisplay">$0.00</span></div>
+
+    ${isEdit ? "" : `
+    <div class="checkrow"><input type="checkbox" id="apRepeat"> <label for="apRepeat" style="margin:0;font-weight:600;font-size:13.5px;">Repeating appointment</label></div>
+    <div id="apRepeatFields" class="hidden field-row">
+      <div class="field"><label>Every (weeks)</label><input type="number" id="apRepeatWeeks" min="1" max="26" value="6"></div>
+      <div class="field"><label>Total occurrences</label><input type="number" id="apRepeatCount" min="2" max="26" value="6"></div>
+    </div>`}
+
+    <div class="field"><label>Notes</label><textarea id="apNotes" placeholder="Anything the groomer should know for this visit…">${esc(appt?.notes || "")}</textarea></div>
+    <div class="btn-row">
+      <button class="btn btn-primary" id="apSaveBtn">${isEdit ? "Save changes" : "Schedule appointment"}</button>
+    </div>
+  `;
+  openSheet(isEdit ? "Edit Appointment" : "New Appointment", body);
+
+  function currentPet() { return getPet($("#apPet").value); }
+  function refreshPetOptions() {
+    const cid = $("#apClient").value;
+    const pets = petsForClient(cid);
+    $("#apPet").innerHTML = pets.length
+      ? pets.map(p => `<option value="${p.id}" ${p.id === initialPetId ? "selected" : ""}>${esc(p.name)}</option>`).join("")
+      : `<option value="">No pets for this client</option>`;
+  }
+  function renderServiceLines() {
+    const pet = currentPet();
+    const chosen = activeServices.filter(s => selectedServiceIds.has(s.id));
+    $("#apServiceLines").innerHTML = chosen.map(s => {
+      const price = priceOverrides[s.id] !== undefined ? priceOverrides[s.id] : priceForPetSize(s, pet);
+      priceOverrides[s.id] = price;
+      return `<div class="row between" style="gap:10px;">
+        <span class="small">${esc(s.name)}</span>
+        <input type="number" step="0.01" min="0" class="apLinePrice" data-service-id="${s.id}" value="${price}" style="width:90px;padding:7px 9px;border:1.5px solid var(--border);border-radius:8px;text-align:right;">
+      </div>`;
+    }).join("");
+    document.querySelectorAll(".apLinePrice").forEach(inp => inp.addEventListener("input", () => {
+      priceOverrides[inp.dataset.serviceId] = parseFloat(inp.value) || 0;
+      updateTotalDisplay();
+    }));
+    updateTotalDisplay();
+  }
+  function updateTotalDisplay() {
+    const total = [...selectedServiceIds].reduce((s, id) => s + Number(priceOverrides[id] || 0), 0);
+    $("#apTotalDisplay").textContent = fmtMoney(total);
+  }
+  refreshPetOptions(); renderServiceLines();
+
+  $("#apClient").addEventListener("change", () => { refreshPetOptions(); renderServiceLines(); });
+  $("#apPet").addEventListener("change", renderServiceLines);
+  $("#apServiceChips").addEventListener("click", (e) => {
+    const chip = e.target.closest("[data-service-id]"); if (!chip) return;
+    const id = chip.dataset.serviceId;
+    if (selectedServiceIds.has(id)) { selectedServiceIds.delete(id); delete priceOverrides[id]; }
+    else selectedServiceIds.add(id);
+    chip.classList.toggle("selected");
+    renderServiceLines();
+  });
+  const repeatCheck = $("#apRepeat");
+  if (repeatCheck) repeatCheck.addEventListener("change", () => $("#apRepeatFields").classList.toggle("hidden", !repeatCheck.checked));
+
+  $("#apSaveBtn").addEventListener("click", async () => {
+    const clientId = $("#apClient").value, petId = $("#apPet").value;
+    const when = $("#apWhen").value;
+    if (!clientId || !petId) { toast("Choose a client and pet"); return; }
+    if (!when) { toast("Pick a date and time"); return; }
+    const scheduledAt = new Date(when).toISOString();
+    const duration = parseInt($("#apDuration").value, 10);
+    const notes = $("#apNotes").value.trim();
+    const serviceLines = [...selectedServiceIds].map(id => {
+      const s = activeServices.find(x => x.id === id);
+      return { service_id: id, service_name: s ? s.name : "Service", price: Number(priceOverrides[id] || 0) };
+    });
+
+    if (isEdit) {
+      const { error } = await sb.from("appointments").update({
+        client_id: clientId, pet_id: petId, scheduled_at: scheduledAt, duration_minutes: duration,
+        notes, updated_at: new Date().toISOString(),
+      }).eq("id", appt.id);
+      if (error) { console.error(error); toast("Save failed"); return; }
+      await sb.from("appointment_services").delete().eq("appointment_id", appt.id);
+      if (serviceLines.length) await sb.from("appointment_services").insert(serviceLines.map(l => ({ ...l, appointment_id: appt.id })));
+      await loadAll(); closeSheet(); render(); toast("Appointment updated");
+      return;
+    }
+
+    const repeat = repeatCheck && repeatCheck.checked;
+    const weeks = repeat ? Math.max(1, parseInt($("#apRepeatWeeks").value, 10) || 1) : null;
+    const count = repeat ? Math.min(26, Math.max(2, parseInt($("#apRepeatCount").value, 10) || 2)) : 1;
+
+    let seriesId = null;
+    if (repeat) {
+      const { data, error } = await sb.from("appointment_series").insert({ pet_id: petId, interval_weeks: weeks, notes }).select().single();
+      if (error) { console.error(error); toast("Couldn't create series"); return; }
+      seriesId = data.id;
+    }
+
+    const baseDate = new Date(scheduledAt);
+    const rows = Array.from({ length: count }, (_, i) => ({
+      client_id: clientId, pet_id: petId, series_id: seriesId,
+      scheduled_at: addWeeks(baseDate, i * (weeks || 0)).toISOString(),
+      duration_minutes: duration, status: "scheduled", notes,
+    }));
+    const { data: inserted, error: insErr } = await sb.from("appointments").insert(rows).select();
+    if (insErr) { console.error(insErr); toast("Save failed"); return; }
+    if (serviceLines.length && inserted?.length) {
+      const allLines = inserted.flatMap(a => serviceLines.map(l => ({ ...l, appointment_id: a.id })));
+      await sb.from("appointment_services").insert(allLines);
+    }
+    await loadAll(); closeSheet(); render();
+    toast(repeat ? `${count} appointments scheduled` : "Appointment scheduled");
+  });
+}
+
+/* ---------- APPOINTMENT DETAIL ---------- */
+function openAppointmentDetail(apptId) {
+  const appt = DB.appointments.find(a => a.id === apptId);
+  if (!appt) return;
+  const pet = getPet(appt.pet_id), client = getClient(appt.client_id);
+  const services = servicesForAppt(appt.id);
+  const total = apptTotal(appt.id);
+  const pay = paymentForAppt(appt.id);
+  const report = reportForAppt(appt.id);
+  const series = appt.series_id ? DB.appointments.filter(a => a.series_id === appt.series_id).length : 0;
+
+  const body = `
+    <div class="row between" style="margin-bottom:8px;">
+      <div>
+        <div class="bold">${esc(pet ? pet.name : "")} <span class="muted">— ${esc(client ? client.name : "")}</span></div>
+        <div class="small muted">${fmtDateLong(appt.scheduled_at)} · ${fmtTime(appt.scheduled_at)} (${appt.duration_minutes} min)</div>
+      </div>
+      <span class="pill ${appt.status}">${STATUS_LABEL[appt.status]}</span>
+    </div>
+    ${series > 1 ? `<div class="tiny muted" style="margin-bottom:10px;">🔁 Part of a recurring series (${series} total appointments)</div>` : ""}
+    ${appt.notes ? `<div class="card small" style="background:var(--surface-3);box-shadow:none;margin-bottom:10px;">${esc(appt.notes)}</div>` : ""}
+
+    <div class="section-title">Services</div>
+    <div class="card">
+      ${services.length === 0 ? `<div class="small muted">No services recorded.</div>` :
+        services.map((s, i) => `<div class="row between" style="${i > 0 ? "border-top:1px solid var(--border);padding-top:8px;margin-top:8px;" : ""}"><span class="small">${esc(s.service_name)}</span><span class="small bold">${fmtMoney(s.price)}</span></div>`).join("")}
+      <div class="row between" style="border-top:1.5px solid var(--border);margin-top:10px;padding-top:10px;"><span class="bold">Total</span><span class="bold">${fmtMoney(total)}</span></div>
+    </div>
+
+    <div class="section-title">Status</div>
+    <div class="chip-select" style="margin-bottom:4px;">
+      <button class="chip ${appt.status === "scheduled" ? "selected" : ""}" data-set-status="scheduled">Scheduled</button>
+      <button class="chip ${appt.status === "completed" ? "selected" : ""}" data-set-status="completed">Completed</button>
+      <button class="chip ${appt.status === "no_show" ? "selected" : ""}" data-set-status="no_show">No-show</button>
+      <button class="chip ${appt.status === "cancelled" ? "selected" : ""}" data-set-status="cancelled">Cancelled</button>
+    </div>
+
+    <div class="section-title">Payment</div>
+    <div class="card">
+      <div class="field-row">
+        <div class="field"><label>Amount charged</label><input type="number" step="0.01" min="0" id="payAmount" value="${pay ? pay.amount : total}"></div>
+        <div class="field"><label>Method</label>
+          <select id="payMethod">${Object.entries(PAYMENT_METHOD_LABEL).map(([k, v]) => `<option value="${k}" ${pay?.method === k ? "selected" : ""}>${v}</option>`).join("")}</select>
+        </div>
+      </div>
+      <div class="checkrow"><input type="checkbox" id="payPaid" ${pay?.paid ? "checked" : ""}> <label for="payPaid" style="margin:0;font-weight:600;font-size:13.5px;">Marked paid</label></div>
+      <button class="btn btn-primary btn-sm" id="paySaveBtn" style="width:100%;">Save payment</button>
+    </div>
+
+    <div class="section-title">Visit report</div>
+    <button class="btn btn-outline" id="reportBtn">${report ? "View / edit visit report" : "Create visit report"}</button>
+
+    <div class="section-title">Manage</div>
+    <div class="btn-row">
+      <button class="btn btn-secondary" id="editApptBtn">Edit</button>
+      <button class="btn btn-danger" id="deleteApptBtn">Delete</button>
+    </div>
+  `;
+  const overlay = openSheet("Appointment", body);
+
+  overlay.querySelectorAll("[data-set-status]").forEach(b => b.addEventListener("click", async () => {
+    const { error } = await sb.from("appointments").update({ status: b.dataset.setStatus, updated_at: new Date().toISOString() }).eq("id", appt.id);
+    if (error) { toast("Update failed"); return; }
+    await loadAll(); closeSheet(); render(); openAppointmentDetail(appt.id);
+  }));
+
+  $("#paySaveBtn").addEventListener("click", async () => {
+    const amount = parseFloat($("#payAmount").value) || 0;
+    const method = $("#payMethod").value;
+    const paid = $("#payPaid").checked;
+    const payload = { appointment_id: appt.id, amount, method, paid, paid_at: paid ? new Date().toISOString() : null };
+    let error;
+    if (pay) { ({ error } = await sb.from("payments").update(payload).eq("id", pay.id)); }
+    else { ({ error } = await sb.from("payments").insert(payload)); }
+    if (error) { console.error(error); toast("Save failed"); return; }
+    await loadAll(); render(); toast("Payment saved");
+    closeSheet(); openAppointmentDetail(appt.id);
+  });
+
+  $("#reportBtn").addEventListener("click", () => openVisitReportEditor(appt.id));
+  $("#editApptBtn").addEventListener("click", () => openAppointmentForm(appt));
+  $("#deleteApptBtn").addEventListener("click", () => {
+    confirmDialog("Delete this appointment? Its payment and visit report will be deleted too.", async () => {
+      const { error } = await sb.from("appointments").delete().eq("id", appt.id);
+      if (error) { toast("Delete failed"); return; }
+      await loadAll(); closeSheet(); render(); toast("Appointment deleted");
+    });
+  });
+}
+
+/* =====================================================================
+   VISIT REPORTS
+   ===================================================================== */
+async function openVisitReportEditor(apptId) {
+  const appt = DB.appointments.find(a => a.id === apptId);
+  let report = reportForAppt(apptId);
+  if (!report) {
+    setLoading(true);
+    const { data, error } = await sb.from("visit_reports").insert({ appointment_id: apptId, pet_id: appt.pet_id }).select().single();
+    setLoading(false);
+    if (error) { console.error(error); toast("Couldn't start report"); return; }
+    await loadAll();
+    report = reportForAppt(apptId);
+  }
+  const pet = getPet(appt.pet_id), client = getClient(appt.client_id);
+  const photos = photosForReport(report.id);
+  const before = photos.filter(p => p.kind === "before"), after = photos.filter(p => p.kind === "after");
+
+  const body = `
+    <div class="small muted" style="margin-bottom:10px;">${esc(pet?.name)} — ${esc(client?.name)} · ${fmtDate(appt.scheduled_at)}</div>
+    <div class="field"><label>Groomer notes / observations</label><textarea id="vrNotes" placeholder="How the visit went…">${esc(report.groomer_notes || "")}</textarea></div>
+    <div class="field"><label>Matting</label><input type="text" id="vrMatting" value="${esc(report.matting || "")}" placeholder="None / mild / severe, location…"></div>
+    <div class="field"><label>Skin / coat issues</label><input type="text" id="vrSkin" value="${esc(report.skin_issues || "")}" placeholder="Hot spots, dryness, irritation…"></div>
+    <div class="field"><label>Behavior</label><input type="text" id="vrBehavior" value="${esc(report.behavior_notes || "")}" placeholder="Calm, anxious, snapped at dryer…"></div>
+
+    <div class="field"><label>Before photos</label><div class="photo-grid" id="vrBeforeGrid"></div></div>
+    <div class="field"><label>After photos</label><div class="photo-grid" id="vrAfterGrid"></div></div>
+    <input type="file" accept="image/*" capture="environment" id="vrFileInput" class="hidden">
+
+    <div class="btn-row">
+      <button class="btn btn-primary" id="vrSaveBtn">Save report</button>
+    </div>
+    <div class="btn-row" style="margin-top:8px;">
+      <button class="btn btn-outline" id="vrShareBtn">🔗 View / print / share report</button>
+    </div>
+  `;
+  const overlay = openSheet("Visit Report", body);
+
+  function photoTile(p) {
+    return `<div class="photo-slot"><img src="${esc(p.photo_url)}"><button class="rm" data-remove-photo="${p.id}">✕</button></div>`;
+  }
+  function addTile(kind) { return `<div class="photo-slot tap" data-add-photo="${kind}"><span>＋ Add photo</span></div>`; }
+  function renderPhotoGrids() {
+    $("#vrBeforeGrid").innerHTML = before.map(photoTile).join("") + addTile("before");
+    $("#vrAfterGrid").innerHTML = after.map(photoTile).join("") + addTile("after");
+    overlay.querySelectorAll("[data-add-photo]").forEach(t => t.addEventListener("click", () => {
+      pendingPhotoKind = t.dataset.addPhoto; $("#vrFileInput").click();
+    }));
+    overlay.querySelectorAll("[data-remove-photo]").forEach(b => b.addEventListener("click", async () => {
+      const photo = photos.find(p => p.id === b.dataset.removePhoto);
+      await sb.from("visit_report_photos").delete().eq("id", photo.id);
+      try { const path = photo.photo_url.split(`/${BUCKET}/`)[1]; if (path) await sb.storage.from(BUCKET).remove([path]); } catch (e) { /* ignore */ }
+      await loadAll();
+      const idx = photos.indexOf(photo); if (idx > -1) photos.splice(idx, 1);
+      const idx2 = (photo.kind === "before" ? before : after).indexOf(photo); if (idx2 > -1) (photo.kind === "before" ? before : after).splice(idx2, 1);
+      renderPhotoGrids();
+    }));
+  }
+  let pendingPhotoKind = "before";
+  renderPhotoGrids();
+
+  $("#vrFileInput").addEventListener("change", async (e) => {
+    const file = e.target.files[0]; if (!file) return;
+    setLoading(true);
+    const path = `${apptId}/${uid()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+    const { error: upErr } = await sb.storage.from(BUCKET).upload(path, file, { upsert: false });
+    if (upErr) { setLoading(false); console.error(upErr); toast("Photo upload failed"); return; }
+    const { data: urlData } = sb.storage.from(BUCKET).getPublicUrl(path);
+    const { data: row, error: insErr } = await sb.from("visit_report_photos").insert({
+      visit_report_id: report.id, photo_url: urlData.publicUrl, kind: pendingPhotoKind,
+    }).select().single();
+    setLoading(false);
+    e.target.value = "";
+    if (insErr) { console.error(insErr); toast("Couldn't save photo"); return; }
+    await loadAll();
+    photos.push(row); (row.kind === "before" ? before : after).push(row);
+    renderPhotoGrids();
+    toast("Photo added");
+  });
+
+  $("#vrSaveBtn").addEventListener("click", async () => {
+    const payload = {
+      groomer_notes: $("#vrNotes").value.trim(), matting: $("#vrMatting").value.trim(),
+      skin_issues: $("#vrSkin").value.trim(), behavior_notes: $("#vrBehavior").value.trim(),
+      updated_at: new Date().toISOString(),
+    };
+    const { error } = await sb.from("visit_reports").update(payload).eq("id", report.id);
+    if (error) { console.error(error); toast("Save failed"); return; }
+    await loadAll(); closeSheet(); toast("Report saved");
+  });
+  $("#vrShareBtn").addEventListener("click", () => {
+    const url = new URL(window.location.href);
+    url.search = `?report=${report.id}`;
+    window.open(url.toString(), "_blank");
+  });
+}
+
+/* ---------- STANDALONE SHAREABLE / PRINTABLE REPORT PAGE ---------- */
+async function renderStandaloneReport(reportId) {
+  document.body.innerHTML = `<div id="loading"><div class="spinner"></div><div>Loading report…</div></div>`;
+  const { data: report, error } = await sb.from("visit_reports").select("*").eq("id", reportId).single();
+  if (error || !report) {
+    document.body.innerHTML = `<div style="padding:40px 20px;text-align:center;font-family:sans-serif;">Report not found. It may have been deleted.</div>`;
+    return;
+  }
+  const [{ data: appt }, { data: pet }, { data: photos }] = await Promise.all([
+    sb.from("appointments").select("*").eq("id", report.appointment_id).single(),
+    sb.from("pets").select("*").eq("id", report.pet_id).single(),
+    sb.from("visit_report_photos").select("*").eq("visit_report_id", reportId),
+  ]);
+  let client = null;
+  if (appt) { const { data } = await sb.from("clients").select("*").eq("id", appt.client_id).single(); client = data; }
+  let services = [];
+  if (appt) { const { data } = await sb.from("appointment_services").select("*").eq("appointment_id", appt.id); services = data || []; }
+  const before = (photos || []).filter(p => p.kind === "before");
+  const after = (photos || []).filter(p => p.kind === "after");
+  const total = services.reduce((s, x) => s + Number(x.price || 0), 0);
+
+  document.body.innerHTML = `
+    <div class="report-page" style="padding:20px 18px 60px;">
+      <div class="report-brand">
+        <div class="name">🐾 Fetch A Groomer</div>
+        <div class="muted small">Grooming Visit Report</div>
+      </div>
+      <div class="card">
+        <div class="row between"><span class="bold" style="font-size:17px;">${esc(pet?.name || "Pet")}</span><span class="muted small">${appt ? fmtDateLong(appt.scheduled_at) : ""}</span></div>
+        <div class="muted small" style="margin-top:2px;">${esc(client?.name || "")}${pet?.breed ? " · " + esc(pet.breed) : ""}</div>
+      </div>
+      ${services.length ? `<div class="card">
+        <div class="tiny bold muted" style="text-transform:uppercase;margin-bottom:6px;">Services performed</div>
+        ${services.map(s => `<div class="row between small" style="padding:3px 0;"><span>${esc(s.service_name)}</span><span>${fmtMoney(s.price)}</span></div>`).join("")}
+        <div class="row between bold" style="border-top:1px solid var(--border);margin-top:8px;padding-top:8px;"><span>Total</span><span>${fmtMoney(total)}</span></div>
+      </div>` : ""}
+      ${report.groomer_notes ? infoRow("Groomer notes", report.groomer_notes) : ""}
+      ${report.matting ? infoRow("Matting", report.matting) : ""}
+      ${report.skin_issues ? infoRow("Skin / coat issues", report.skin_issues, true) : ""}
+      ${report.behavior_notes ? infoRow("Behavior", report.behavior_notes) : ""}
+      ${before.length ? `<div class="section-title">Before</div><div class="photo-grid">${before.map(p => `<div class="photo-slot"><img src="${esc(p.photo_url)}"></div>`).join("")}</div>` : ""}
+      ${after.length ? `<div class="section-title">After</div><div class="photo-grid">${after.map(p => `<div class="photo-slot"><img src="${esc(p.photo_url)}"></div>`).join("")}</div>` : ""}
+      <div class="btn-row no-print" style="margin-top:22px;">
+        <button class="btn btn-primary" onclick="window.print()">Print / Save as PDF</button>
+      </div>
+    </div>
+    <div id="toast"></div>
+  `;
+}
+
+/* =====================================================================
+   SEARCH & FILTER
+   ===================================================================== */
+function renderSearchView() {
+  const q = (UI.searchQuery || "").trim().toLowerCase();
+  const f = UI.apptFilter;
+  return `
+    <div class="searchbar">
+      <span>🔎</span>
+      <input type="text" id="searchInput" placeholder="Search clients or pets…" value="${esc(UI.searchQuery)}">
+    </div>
+    <div class="section-title" style="margin-top:0;">Filter appointments</div>
+    <div class="card">
+      <div class="field"><label>Status</label>
+        <select id="filtStatus">
+          <option value="all" ${f.status === "all" ? "selected" : ""}>All statuses</option>
+          <option value="scheduled" ${f.status === "scheduled" ? "selected" : ""}>Scheduled</option>
+          <option value="completed" ${f.status === "completed" ? "selected" : ""}>Completed</option>
+          <option value="cancelled" ${f.status === "cancelled" ? "selected" : ""}>Cancelled</option>
+          <option value="no_show" ${f.status === "no_show" ? "selected" : ""}>No-show</option>
+        </select>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>From</label><input type="date" id="filtFrom" value="${f.from}"></div>
+        <div class="field"><label>To</label><input type="date" id="filtTo" value="${f.to}"></div>
+      </div>
+      <div class="field"><label>Payment</label>
+        <select id="filtPaid">
+          <option value="all" ${f.paid === "all" ? "selected" : ""}>Any</option>
+          <option value="paid" ${f.paid === "paid" ? "selected" : ""}>Paid</option>
+          <option value="unpaid" ${f.paid === "unpaid" ? "selected" : ""}>Unpaid / owing</option>
+        </select>
+      </div>
+    </div>
+    ${renderSearchResults(q, f)}
+  `;
+}
+function renderSearchResults(q, f) {
+  let appts = DB.appointments.slice();
+  if (f.status !== "all") appts = appts.filter(a => a.status === f.status);
+  if (f.from) appts = appts.filter(a => new Date(a.scheduled_at) >= new Date(f.from));
+  if (f.to) appts = appts.filter(a => new Date(a.scheduled_at) <= new Date(f.to + "T23:59:59"));
+  if (f.paid !== "all") appts = appts.filter(a => {
+    const pay = paymentForAppt(a.id); const total = apptTotal(a.id);
+    const isPaid = pay?.paid && Number(pay.amount || 0) >= total && total > 0;
+    return f.paid === "paid" ? isPaid : !isPaid;
+  });
+  if (q) {
+    appts = appts.filter(a => {
+      const pet = getPet(a.pet_id), client = getClient(a.client_id);
+      return (pet?.name.toLowerCase().includes(q)) || (client?.name.toLowerCase().includes(q));
+    });
+  }
+  appts.sort((a, b) => new Date(b.scheduled_at) - new Date(a.scheduled_at));
+
+  const matchingClients = q ? DB.clients.filter(c => c.name.toLowerCase().includes(q)) : [];
+  const matchingPets = q ? DB.pets.filter(p => p.name.toLowerCase().includes(q)) : [];
+
+  return `
+    ${q && (matchingClients.length || matchingPets.length) ? `
+      <div class="section-title">Clients & pets</div>
+      <div class="card">
+        ${matchingClients.map(c => `<div class="row tap" data-open-client="${c.id}" style="padding:6px 0;gap:10px;"><span>👤</span><span class="small">${esc(c.name)}</span></div>`).join("")}
+        ${matchingPets.map(p => `<div class="row tap" data-open-pet="${p.id}" style="padding:6px 0;gap:10px;"><span>🐾</span><span class="small">${esc(p.name)} <span class="muted">— ${esc(getClient(p.client_id)?.name || "")}</span></span></div>`).join("")}
+      </div>` : ""}
+    <div class="section-title">Appointments (${appts.length})</div>
+    ${appts.length === 0 ? `<div class="card empty small">No matching appointments.</div>` : appts.slice(0, 50).map(a => renderApptMiniRow(a)).join("")}
+  `;
+}
+function bindSearchEvents() {
+  const input = $("#searchInput");
+  if (input) input.addEventListener("input", () => { UI.searchQuery = input.value; render(); positionCaretEnd(input); });
+  const fs = $("#filtStatus"), ff = $("#filtFrom"), ft = $("#filtTo"), fp = $("#filtPaid");
+  if (fs) fs.addEventListener("change", () => { UI.apptFilter.status = fs.value; render(); });
+  if (ff) ff.addEventListener("change", () => { UI.apptFilter.from = ff.value; render(); });
+  if (ft) ft.addEventListener("change", () => { UI.apptFilter.to = ft.value; render(); });
+  if (fp) fp.addEventListener("change", () => { UI.apptFilter.paid = fp.value; render(); });
+  document.querySelectorAll("[data-open-client]").forEach(b => b.addEventListener("click", () => openClientDetail(b.dataset.openClient)));
+  document.querySelectorAll("[data-open-pet]").forEach(b => b.addEventListener("click", () => openPetDetail(b.dataset.openPet)));
+  document.querySelectorAll("[data-open-appt]").forEach(b => b.addEventListener("click", () => openAppointmentDetail(b.dataset.openAppt)));
+}
+
+/* ---------- BIND EVENTS DISPATCH ---------- */
+function bindViewEvents() {
+  if (UI.tab === "dashboard") bindDashboardEvents();
+  else if (UI.tab === "calendar") bindCalendarEvents();
+  else if (UI.tab === "clients") bindClientsEvents();
+  else if (UI.tab === "services") bindServicesEvents();
+  else if (UI.tab === "search") bindSearchEvents();
+}
+
+/* =====================================================================
+   BOOT
+   ===================================================================== */
+async function boot() {
+  const params = new URLSearchParams(window.location.search);
+  const reportId = params.get("report");
+  if (reportId) { await renderStandaloneReport(reportId); return; }
+
+  setLoading(true);
+  try {
+    await loadAll();
+  } catch (e) {
+    console.error(e);
+    document.body.innerHTML = `<div style="padding:40px 20px;font-family:sans-serif;text-align:center;">
+      Couldn't connect to the database. Check your connection and reload.</div>`;
+    return;
+  }
+  setLoading(false);
+  $("#app").classList.remove("hidden");
+  renderShell();
+  render();
+
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("sw.js").catch(() => {});
+  }
+}
+boot();
+
+</script>
+</body>
+</html>
