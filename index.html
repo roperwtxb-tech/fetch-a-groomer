@@ -1019,10 +1019,17 @@ function openAppointmentForm(appt, presetOpts) {
   const clients = DB.clients.slice().sort((a, b) => a.name.localeCompare(b.name));
   const initialClientId = appt?.client_id || presetOpts.clientId || (clients[0] && clients[0].id) || "";
   const initialPetId = appt?.pet_id || presetOpts.petId || "";
-  const selectedServiceIds = new Set(appt ? servicesForAppt(appt.id).map(s => s.service_id).filter(Boolean) : []);
-  const priceOverrides = {};
-  const manuallyEditedPrices = new Set();
-  if (appt) servicesForAppt(appt.id).forEach(s => { if (s.service_id) priceOverrides[s.service_id] = s.price; });
+  // Each dog gets its OWN independent service list/pricing, even when several
+  // dogs are booked together in one visit — keyed by pet id.
+  const petSelections = {};
+  function ensurePetSel(petId) {
+    if (!petSelections[petId]) petSelections[petId] = { serviceIds: new Set(), priceOverrides: {}, manualEdits: new Set() };
+    return petSelections[petId];
+  }
+  if (appt) {
+    const sel = ensurePetSel(appt.pet_id);
+    servicesForAppt(appt.id).forEach(s => { if (s.service_id) { sel.serviceIds.add(s.service_id); sel.priceOverrides[s.service_id] = s.price; } });
+  }
 
   if (clients.length === 0) {
     openSheet("Add a client first", `<p class="muted" style="margin-bottom:16px;">You need at least one client (with a pet) before scheduling an appointment.</p>
@@ -1053,13 +1060,8 @@ function openAppointmentForm(appt, presetOpts) {
         </select>
       </div>
     </div>
-    <div class="field"><label>Services</label>
-      <div class="chip-select" id="apServiceChips">
-        ${activeServices.map(s => `<button type="button" class="chip ${selectedServiceIds.has(s.id) ? "selected" : ""}" data-service-id="${s.id}">${esc(s.name)}</button>`).join("")}
-      </div>
-    </div>
-    <div id="apServiceLines" class="stack" style="margin:10px 0;"></div>
-    <div class="row between" style="margin-bottom:14px;"><span class="small bold">Total</span><span class="bold" id="apTotalDisplay">$0.00</span></div>
+    <div id="apServicesContainer"></div>
+    <div class="row between" style="margin-bottom:14px;"><span class="small bold">Total</span><span class="bold" id="apGrandTotalDisplay">$0.00</span></div>
 
     ${isEdit ? "" : `
     <div id="apRepeatSection">
@@ -1077,10 +1079,9 @@ function openAppointmentForm(appt, presetOpts) {
   `;
   openSheet(isEdit ? "Edit Appointment" : "New Appointment", body);
 
-  function currentPet() {
-    if (isEdit) return getPet($("#apPet").value);
-    const firstId = [...selectedPetIds][0];
-    return firstId ? getPet(firstId) : null;
+  function petsToShow() {
+    if (isEdit) { const id = $("#apPet") ? $("#apPet").value : initialPetId; return id ? [id] : []; }
+    return [...selectedPetIds];
   }
   function refreshPetOptions() {
     const cid = $("#apClient").value;
@@ -1100,33 +1101,74 @@ function openAppointmentForm(appt, presetOpts) {
     const repeatSection = $("#apRepeatSection");
     if (repeatSection) repeatSection.classList.toggle("hidden", selectedPetIds.size > 1);
   }
-  function renderServiceLines() {
-    const pet = currentPet();
-    const chosen = activeServices.filter(s => selectedServiceIds.has(s.id));
-    $("#apServiceLines").innerHTML = chosen.map(s => {
-      const price = priceOverrides[s.id] !== undefined ? priceOverrides[s.id] : priceForPetSize(s, pet);
-      priceOverrides[s.id] = price;
+
+  function petTotal(pid) {
+    const sel = ensurePetSel(pid);
+    return [...sel.serviceIds].reduce((s, id) => s + Number(sel.priceOverrides[id] || 0), 0);
+  }
+  function updateGrandTotal() {
+    const ids = petsToShow();
+    $("#apGrandTotalDisplay").textContent = fmtMoney(ids.reduce((s, pid) => s + petTotal(pid), 0));
+    ids.forEach(pid => {
+      const el = document.querySelector(`[data-pet-subtotal="${pid}"]`);
+      if (el) el.textContent = fmtMoney(petTotal(pid));
+    });
+  }
+  function renderPetLines(pid) {
+    const pet = getPet(pid);
+    const sel = ensurePetSel(pid);
+    const container = document.querySelector(`[data-pet-lines="${pid}"]`);
+    if (!container) return;
+    const chosen = activeServices.filter(s => sel.serviceIds.has(s.id));
+    container.innerHTML = chosen.map(s => {
+      const price = sel.priceOverrides[s.id] !== undefined ? sel.priceOverrides[s.id] : priceForPetSize(s, pet);
+      sel.priceOverrides[s.id] = price;
       return `<div class="row between" style="gap:10px;">
         <span class="small">${esc(s.name)}</span>
         <input type="number" step="0.01" min="0" class="apLinePrice" data-service-id="${s.id}" value="${price}" style="width:90px;padding:7px 9px;border:1.5px solid var(--border);border-radius:8px;text-align:right;">
       </div>`;
     }).join("");
-    document.querySelectorAll(".apLinePrice").forEach(inp => inp.addEventListener("input", () => {
-      priceOverrides[inp.dataset.serviceId] = parseFloat(inp.value) || 0;
-      manuallyEditedPrices.add(inp.dataset.serviceId);
-      updateTotalDisplay();
+    container.querySelectorAll(".apLinePrice").forEach(inp => inp.addEventListener("input", () => {
+      sel.priceOverrides[inp.dataset.serviceId] = parseFloat(inp.value) || 0;
+      sel.manualEdits.add(inp.dataset.serviceId);
+      updateGrandTotal();
     }));
-    updateTotalDisplay();
   }
-  function updateTotalDisplay() {
-    const total = [...selectedServiceIds].reduce((s, id) => s + Number(priceOverrides[id] || 0), 0);
-    $("#apTotalDisplay").textContent = fmtMoney(total);
+  function renderServicesContainer() {
+    const ids = petsToShow();
+    $("#apServicesContainer").innerHTML = ids.map(pid => {
+      const pet = getPet(pid);
+      const sel = ensurePetSel(pid);
+      return `<div class="field">
+        <label>${ids.length > 1 ? esc((pet ? pet.name : "Pet") + "'s services") : "Services"}</label>
+        <div class="chip-select" data-pet-chips="${pid}">
+          ${activeServices.map(s => `<button type="button" class="chip ${sel.serviceIds.has(s.id) ? "selected" : ""}" data-service-id="${s.id}">${esc(s.name)}</button>`).join("")}
+        </div>
+        <div class="stack" style="margin:8px 0;" data-pet-lines="${pid}"></div>
+        ${ids.length > 1 ? `<div class="row between small" style="margin-bottom:6px;"><span class="muted">${esc(pet ? pet.name : "")} subtotal</span><span class="bold" data-pet-subtotal="${pid}">$0.00</span></div>` : ""}
+      </div>`;
+    }).join("");
+    ids.forEach(pid => renderPetLines(pid));
+    document.querySelectorAll("[data-pet-chips]").forEach(container => {
+      container.addEventListener("click", (e) => {
+        const chip = e.target.closest("[data-service-id]"); if (!chip) return;
+        const pid = container.dataset.petChips;
+        const sel = ensurePetSel(pid);
+        const id = chip.dataset.serviceId;
+        if (sel.serviceIds.has(id)) { sel.serviceIds.delete(id); delete sel.priceOverrides[id]; sel.manualEdits.delete(id); }
+        else sel.serviceIds.add(id);
+        chip.classList.toggle("selected");
+        renderPetLines(pid);
+        updateGrandTotal();
+      });
+    });
+    updateGrandTotal();
   }
-  refreshPetOptions(); renderServiceLines();
+  refreshPetOptions(); renderServicesContainer();
 
-  $("#apClient").addEventListener("change", () => { refreshPetOptions(); renderServiceLines(); });
+  $("#apClient").addEventListener("change", () => { refreshPetOptions(); renderServicesContainer(); });
   const apPetSelect = $("#apPet");
-  if (apPetSelect) apPetSelect.addEventListener("change", renderServiceLines);
+  if (apPetSelect) apPetSelect.addEventListener("change", renderServicesContainer);
   const apPetChips = $("#apPetChips");
   if (apPetChips) apPetChips.addEventListener("click", (e) => {
     const chip = e.target.closest("[data-pet-id]"); if (!chip) return;
@@ -1134,23 +1176,17 @@ function openAppointmentForm(appt, presetOpts) {
     if (selectedPetIds.has(id)) { if (selectedPetIds.size > 1) selectedPetIds.delete(id); }
     else selectedPetIds.add(id);
     refreshPetOptions();
-    renderServiceLines();
-  });
-  $("#apServiceChips").addEventListener("click", (e) => {
-    const chip = e.target.closest("[data-service-id]"); if (!chip) return;
-    const id = chip.dataset.serviceId;
-    if (selectedServiceIds.has(id)) { selectedServiceIds.delete(id); delete priceOverrides[id]; manuallyEditedPrices.delete(id); }
-    else selectedServiceIds.add(id);
-    chip.classList.toggle("selected");
-    renderServiceLines();
+    renderServicesContainer();
   });
   const repeatCheck = $("#apRepeat");
   if (repeatCheck) repeatCheck.addEventListener("change", () => $("#apRepeatFields").classList.toggle("hidden", !repeatCheck.checked));
 
-  function serviceLinesForPet(pet) {
-    return [...selectedServiceIds].map(id => {
+  function serviceLinesForPet(pid) {
+    const sel = ensurePetSel(pid);
+    const pet = getPet(pid);
+    return [...sel.serviceIds].map(id => {
       const s = activeServices.find(x => x.id === id);
-      const price = manuallyEditedPrices.has(id) ? Number(priceOverrides[id] || 0) : priceForPetSize(s || {}, pet);
+      const price = sel.manualEdits.has(id) ? Number(sel.priceOverrides[id] || 0) : priceForPetSize(s || {}, pet);
       return { service_id: id, service_name: s ? s.name : "Service", price };
     });
   }
@@ -1167,7 +1203,7 @@ function openAppointmentForm(appt, presetOpts) {
     if (isEdit) {
       const petId = $("#apPet").value;
       if (!petId) { toast("Choose a pet"); return; }
-      const serviceLines = serviceLinesForPet(getPet(petId));
+      const serviceLines = serviceLinesForPet(petId);
       const { error } = await sb.from("appointments").update({
         client_id: clientId, pet_id: petId, scheduled_at: scheduledAt, duration_minutes: duration,
         notes, updated_at: new Date().toISOString(),
@@ -1190,7 +1226,6 @@ function openAppointmentForm(appt, presetOpts) {
     const baseDate = new Date(scheduledAt);
 
     for (const petId of petIds) {
-      const pet = getPet(petId);
       let seriesId = null;
       if (repeat) {
         const { data, error } = await sb.from("appointment_series").insert({ pet_id: petId, interval_weeks: weeks, notes }).select().single();
@@ -1204,7 +1239,7 @@ function openAppointmentForm(appt, presetOpts) {
       }));
       const { data: inserted, error: insErr } = await sb.from("appointments").insert(rows).select();
       if (insErr) { console.error(insErr); toast("Save failed"); return; }
-      const serviceLines = serviceLinesForPet(pet);
+      const serviceLines = serviceLinesForPet(petId);
       if (serviceLines.length && inserted?.length) {
         const allLines = inserted.flatMap(a => serviceLines.map(l => ({ ...l, appointment_id: a.id })));
         await sb.from("appointment_services").insert(allLines);
@@ -1547,6 +1582,7 @@ async function renderStandaloneReport(reportId) {
 
   document.body.innerHTML = `
     <div class="report-page" style="padding:20px 18px 60px;">
+      <button id="reportCloseBtn" class="no-print" aria-label="Close report" style="position:fixed;top:14px;right:14px;z-index:50;width:38px;height:38px;border-radius:50%;border:1px solid var(--border);background:var(--surface-1,#fff);box-shadow:0 2px 8px rgba(0,0,0,.15);font-size:18px;line-height:1;display:flex;align-items:center;justify-content:center;">✕</button>
       <div class="report-brand">
         <div class="name">🐾 Fetch A Groomer</div>
         <div class="muted small">Grooming Visit Report</div>
@@ -1572,12 +1608,23 @@ async function renderStandaloneReport(reportId) {
       ${report.next_visit_date ? infoRow("Next scheduled visit", fmtDateLong(parseDateOnly(report.next_visit_date))) : ""}
       ${before.length ? `<div class="section-title">Before</div><div class="photo-grid">${before.map(p => `<div class="photo-slot"><img src="${esc(p.photo_url)}"></div>`).join("")}</div>` : ""}
       ${after.length ? `<div class="section-title">After</div><div class="photo-grid">${after.map(p => `<div class="photo-slot"><img src="${esc(p.photo_url)}"></div>`).join("")}</div>` : ""}
-      <div class="btn-row no-print" style="margin-top:22px;">
+      <div class="btn-row no-print" style="margin-top:22px;gap:8px;">
+        <button class="btn btn-outline" id="reportBackBtn">← Back to App</button>
         <button class="btn btn-primary" onclick="window.print()">Print / Save as PDF</button>
       </div>
     </div>
     <div id="toast"></div>
   `;
+  const leaveReport = () => {
+    // If this report was opened in its own tab (e.g. via the share/print button),
+    // try closing that tab first. If the browser won't allow it (page wasn't
+    // opened by script, or it's the only tab), fall back to navigating back to
+    // the main app in the same tab.
+    window.close();
+    setTimeout(() => { window.location.href = window.location.pathname; }, 150);
+  };
+  $("#reportCloseBtn").addEventListener("click", leaveReport);
+  $("#reportBackBtn").addEventListener("click", leaveReport);
 }
 
 /* =====================================================================
