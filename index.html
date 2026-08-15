@@ -319,8 +319,27 @@ function toDateOnlyLocal(d) {
 // can display as the previous day in negative-offset timezones. Parse the
 // components directly into a local Date instead.
 function parseDateOnly(s) {
+  if (!s) return null;
   const [y, m, d] = s.split("-").map(Number);
+  if (!y || !m || !d) return null;
   return new Date(y, m - 1, d);
+}
+
+// Recurring appointments run to an end date rather than a fixed count. This is
+// the safety ceiling so a weekly repeat stretched years out can't create a
+// runaway number of rows — the form tells her when it kicks in.
+const REPEAT_MAX = 60;
+function repeatDatesUntil(baseDate, weeks, untilStr) {
+  const until = parseDateOnly(untilStr);
+  if (!until || !weeks) return [new Date(baseDate)];
+  const untilEnd = new Date(until); untilEnd.setHours(23, 59, 59, 999);
+  const dates = [];
+  for (let i = 0; i < REPEAT_MAX; i++) {
+    const d = addWeeks(baseDate, i * weeks);
+    if (d > untilEnd) break;
+    dates.push(d);
+  }
+  return dates.length ? dates : [new Date(baseDate)];
 }
 function initials(name) {
   return (name || "?").trim().split(/\s+/).slice(0, 2).map(w => w[0] ? w[0].toUpperCase() : "").join("");
@@ -1097,6 +1116,7 @@ function openAppointmentForm(appt, presetOpts) {
 
   const activeServices = DB.services.filter(s => s.active);
   const defaultDate = appt ? toDatetimeLocal(appt.scheduled_at) : toDatetimeLocal(new Date(UI.selectedDate.getFullYear(), UI.selectedDate.getMonth(), UI.selectedDate.getDate(), 9, 0));
+  const defaultUntil = toDateOnlyLocal(addDays(new Date(defaultDate), 365));
   const selectedPetIds = new Set(initialPetId ? [initialPetId] : []);
 
   const body = `
@@ -1125,8 +1145,9 @@ function openAppointmentForm(appt, presetOpts) {
       <div class="checkrow"><input type="checkbox" id="apRepeat"> <label for="apRepeat" style="margin:0;font-weight:600;font-size:13.5px;">Repeating appointment</label></div>
       <div id="apRepeatFields" class="hidden field-row">
         <div class="field"><label>Every (weeks)</label><input type="number" id="apRepeatWeeks" min="1" max="26" value="6"></div>
-        <div class="field"><label>Total occurrences</label><input type="number" id="apRepeatCount" min="2" max="26" value="6"></div>
+        <div class="field"><label>Repeat until</label><input type="date" id="apRepeatUntil" value="${defaultUntil}"></div>
       </div>
+      <div id="apRepeatPreview" class="tiny hidden" style="margin:-4px 0 12px 2px;color:var(--teal-700);font-weight:600;"></div>
     </div>`}
 
     <div class="field"><label>Notes</label><textarea id="apNotes" placeholder="Anything the groomer should know for this visit…">${esc(appt?.notes || "")}</textarea></div>
@@ -1236,7 +1257,42 @@ function openAppointmentForm(appt, presetOpts) {
     renderServicesContainer();
   });
   const repeatCheck = $("#apRepeat");
-  if (repeatCheck) repeatCheck.addEventListener("change", () => $("#apRepeatFields").classList.toggle("hidden", !repeatCheck.checked));
+  function plannedRepeatDates() {
+    const whenVal = $("#apWhen") ? $("#apWhen").value : "";
+    const base = whenVal ? new Date(whenVal) : new Date();
+    const weeks = Math.max(1, parseInt($("#apRepeatWeeks").value, 10) || 1);
+    return repeatDatesUntil(base, weeks, $("#apRepeatUntil").value);
+  }
+  function updateRepeatPreview() {
+    const prev = $("#apRepeatPreview");
+    if (!prev || !repeatCheck) return;
+    if (!repeatCheck.checked) { prev.classList.add("hidden"); return; }
+    prev.classList.remove("hidden");
+    const dates = plannedRepeatDates();
+    if (dates.length <= 1) {
+      prev.textContent = "That end date is before the next visit would fall — only 1 appointment will be created.";
+      return;
+    }
+    const capped = dates.length >= REPEAT_MAX;
+    const last = dates[dates.length - 1];
+    // A series often runs into next year — spell the year out so "Jul 17"
+    // can't be mistaken for a date that has already passed.
+    const lastLabel = last.getFullYear() === dates[0].getFullYear()
+      ? fmtDate(last)
+      : `${fmtDate(last)}, ${last.getFullYear()}`;
+    prev.textContent = `${dates.length} appointments · last one ${lastLabel}`
+      + (capped ? ` (capped at ${REPEAT_MAX} — shorten the end date or widen the interval to fit more)` : "");
+  }
+  if (repeatCheck) {
+    repeatCheck.addEventListener("change", () => {
+      $("#apRepeatFields").classList.toggle("hidden", !repeatCheck.checked);
+      updateRepeatPreview();
+    });
+    ["#apRepeatWeeks", "#apRepeatUntil", "#apWhen"].forEach(sel => {
+      const el = $(sel);
+      if (el) el.addEventListener("input", updateRepeatPreview);
+    });
+  }
 
   function serviceLinesForPet(pid) {
     const sel = ensurePetSel(pid);
@@ -1278,9 +1334,10 @@ function openAppointmentForm(appt, presetOpts) {
 
     const repeat = !multiDog && repeatCheck && repeatCheck.checked;
     const weeks = repeat ? Math.max(1, parseInt($("#apRepeatWeeks").value, 10) || 1) : null;
-    const count = repeat ? Math.min(26, Math.max(2, parseInt($("#apRepeatCount").value, 10) || 2)) : 1;
     const visitGroupId = multiDog ? uid() : null;
     const baseDate = new Date(scheduledAt);
+    const seriesDates = repeat ? plannedRepeatDates() : [baseDate];
+    const count = seriesDates.length;
 
     for (const petId of petIds) {
       let seriesId = null;
@@ -1289,9 +1346,9 @@ function openAppointmentForm(appt, presetOpts) {
         if (error) { console.error(error); toast("Couldn't create series"); return; }
         seriesId = data.id;
       }
-      const rows = Array.from({ length: count }, (_, i) => ({
+      const rows = seriesDates.map(d => ({
         client_id: clientId, pet_id: petId, series_id: seriesId, visit_group_id: visitGroupId,
-        scheduled_at: addWeeks(baseDate, i * (weeks || 0)).toISOString(),
+        scheduled_at: d.toISOString(),
         duration_minutes: duration, status: "scheduled", notes,
       }));
       const { data: inserted, error: insErr } = await sb.from("appointments").insert(rows).select();
