@@ -278,7 +278,7 @@ const sb = createClient(CFG.url, CFG.key);
 const BUCKET = "visit-photos";
 // Shown at the bottom of the dashboard so it's possible to confirm at a glance
 // which build is actually running after an upload. Bump this on every release.
-const APP_VERSION = "2026.08.15";
+const APP_VERSION = "2026.08.15d";
 
 /* ---------- STATE ---------- */
 const DB = {
@@ -308,6 +308,21 @@ function fmtDate(d) { d = new Date(d); return d.toLocaleDateString(undefined, { 
 function fmtDateShort(d) { d = new Date(d); return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }); }
 function fmtDateLong(d) { d = new Date(d); return d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" }); }
 function fmtTime(d) { d = new Date(d); return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }); }
+function fmtDuration(m) {
+  m = Number(m) || 0;
+  if (m < 60) return `${m} min`;
+  const h = Math.floor(m / 60), rest = m % 60;
+  return rest ? `${h} hr ${rest} min` : `${h} hr`;
+}
+// Half-hour steps from 30 min up to 6 hours, plus 45 min (a common short slot).
+// Any appointment already saved with an off-list duration keeps its own value
+// as an option, so opening it to edit can't silently shorten the visit.
+function durationChoices(current) {
+  const base = [30, 45];
+  for (let m = 60; m <= 360; m += 30) base.push(m);
+  if (current && !base.includes(Number(current))) base.push(Number(current));
+  return [...new Set(base)].sort((a, b) => a - b);
+}
 function fmtMoney(n) { n = Number(n || 0); return "$" + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
 function toDatetimeLocal(d) {
   const x = new Date(d); const p = n => String(n).padStart(2, "0");
@@ -532,6 +547,109 @@ function dayForecast(date) {
   return { appts, total, done, remaining: total - done, dogs: appts.length };
 }
 
+/* =====================================================================
+   CSV EXPORT
+   Everything here runs client-side — no server, no extra service. Files open
+   directly in Excel, Numbers, or Google Sheets.
+   ===================================================================== */
+function csvCell(v) {
+  const s = v === null || v === undefined ? "" : String(v);
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+function toCSV(rows) { return rows.map(r => r.map(csvCell).join(",")).join("\r\n"); }
+
+async function downloadCSV(filename, csv) {
+  // The leading BOM is what makes Excel read this as UTF-8 rather than
+  // mangling accented names.
+  const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
+  // On an iPhone home-screen app a plain <a download> often just opens the
+  // file in a viewer with no way to keep it. The share sheet lets her drop it
+  // into Files, Mail, or anything else. Everywhere else, download normally.
+  try {
+    const file = new File([blob], filename, { type: "text/csv" });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file], title: filename });
+      return;
+    }
+  } catch (e) {
+    if (e && e.name === "AbortError") return;   // she tapped Cancel
+    // Anything else: fall through to the download path below.
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1000);
+}
+
+function stamp() { return toDateOnlyLocal(new Date()); }
+
+// One row per pet, with the client's details alongside. Clients who don't have
+// a pet on file yet still get a row so nobody silently drops off the list.
+function clientsCSV() {
+  const header = [
+    "Client name", "Phone", "Email", "Address", "Client notes",
+    "Pet name", "Breed", "Size", "Coat type", "Temperament", "Allergies",
+    "Medical notes", "Vet name", "Vet phone",
+    "Total visits", "Completed visits", "Last visit", "Next visit",
+  ];
+  const rows = [header];
+  const clients = DB.clients.slice().sort((a, b) => a.name.localeCompare(b.name));
+  const now = new Date();
+  for (const c of clients) {
+    const pets = petsForClient(c.id);
+    const list = pets.length ? pets : [null];
+    for (const p of list) {
+      const appts = p ? DB.appointments.filter(a => a.pet_id === p.id) : [];
+      const done = appts.filter(a => a.status === "completed")
+        .sort((a, b) => new Date(b.scheduled_at) - new Date(a.scheduled_at));
+      const next = appts.filter(a => a.status === "scheduled" && new Date(a.scheduled_at) >= now)
+        .sort((a, b) => new Date(a.scheduled_at) - new Date(b.scheduled_at));
+      rows.push([
+        c.name, c.phone, c.email, c.address, c.notes,
+        p?.name, p?.breed, p?.size, p?.coat_type, p?.temperament, p?.allergies,
+        p?.medical_notes, p?.vet_name, p?.vet_phone,
+        appts.length, done.length,
+        done[0] ? toDateOnlyLocal(done[0].scheduled_at) : "",
+        next[0] ? toDateOnlyLocal(next[0].scheduled_at) : "",
+      ]);
+    }
+  }
+  return toCSV(rows);
+}
+
+// One row per appointment — the bookkeeping view.
+function appointmentsCSV() {
+  const header = [
+    "Date", "Time", "Client", "Pet", "Status", "Services", "Amount due",
+    "Paid", "Amount paid", "Method", "Paid on", "Visit notes", "Multi-dog visit",
+  ];
+  const rows = [header];
+  const appts = DB.appointments.slice().sort((a, b) => new Date(a.scheduled_at) - new Date(b.scheduled_at));
+  for (const a of appts) {
+    const pay = paymentForAppt(a.id);
+    const svc = servicesForAppt(a.id);
+    rows.push([
+      toDateOnlyLocal(a.scheduled_at),
+      fmtTime(a.scheduled_at),
+      getClient(a.client_id)?.name || "",
+      getPet(a.pet_id)?.name || "",
+      STATUS_LABEL[a.status] || a.status,
+      svc.map(s => s.service_name).join("; "),
+      apptTotal(a.id).toFixed(2),
+      pay?.paid ? "Yes" : "No",
+      pay?.paid ? Number(pay.amount || 0).toFixed(2) : "",
+      pay?.paid ? (PAYMENT_METHOD_LABEL[pay.method] || pay.method || "") : "",
+      pay?.paid && pay.paid_at ? toDateOnlyLocal(pay.paid_at) : "",
+      a.notes,
+      a.visit_group_id ? "Yes" : "No",
+    ]);
+  }
+  return toCSV(rows);
+}
+
 function outstandingBalances() {
   // Only visits that have actually happened count as money owed — a future
   // scheduled (including recurring) appointment isn't a balance yet.
@@ -656,6 +774,13 @@ function renderDashboard() {
         </div>
       `).join("") + `</div>`}
 
+    <div class="section-title">Export to spreadsheet</div>
+    <div class="card">
+      <p class="tiny muted" style="margin:0 0 10px;">Downloads a .csv file that opens in Excel, Numbers, or Google Sheets.</p>
+      <button class="btn btn-outline btn-sm" id="exportClientsBtn" style="width:100%;margin-bottom:8px;">📇 Clients &amp; pets (${DB.clients.length})</button>
+      <button class="btn btn-outline btn-sm" id="exportApptsBtn" style="width:100%;">💵 Appointments &amp; payments (${DB.appointments.length})</button>
+    </div>
+
     <div class="tiny muted" style="text-align:center;margin:18px 0 4px;">Version ${esc(APP_VERSION)}</div>
   `;
 }
@@ -663,6 +788,19 @@ function renderDashboard() {
 function bindDashboardEvents() {
   document.querySelectorAll("[data-dash-period]").forEach(b => b.addEventListener("click", () => { UI.dashPeriod = b.dataset.dashPeriod; render(); }));
   document.querySelectorAll("[data-open-appt]").forEach(b => b.addEventListener("click", () => openAppointmentDetail(b.dataset.openAppt)));
+
+  const expClients = $("#exportClientsBtn");
+  if (expClients) expClients.addEventListener("click", async () => {
+    if (!DB.clients.length) { toast("No clients to export yet"); return; }
+    await downloadCSV(`fetch-a-groomer-clients-${stamp()}.csv`, clientsCSV());
+    toast("Clients exported");
+  });
+  const expAppts = $("#exportApptsBtn");
+  if (expAppts) expAppts.addEventListener("click", async () => {
+    if (!DB.appointments.length) { toast("No appointments to export yet"); return; }
+    await downloadCSV(`fetch-a-groomer-appointments-${stamp()}.csv`, appointmentsCSV());
+    toast("Appointments exported");
+  });
 }
 
 /* =====================================================================
@@ -1138,7 +1276,7 @@ function openAppointmentForm(appt, presetOpts) {
       <div class="field"><label>Date & time *</label><input type="datetime-local" id="apWhen" value="${defaultDate}"></div>
       <div class="field"><label>Duration</label>
         <select id="apDuration">
-          ${[30, 45, 60, 90, 120, 150].map(m => `<option value="${m}" ${(appt?.duration_minutes || 60) === m ? "selected" : ""}>${m} min</option>`).join("")}
+          ${durationChoices(appt?.duration_minutes).map(m => `<option value="${m}" ${(appt?.duration_minutes || 60) === m ? "selected" : ""}>${fmtDuration(m)}</option>`).join("")}
         </select>
       </div>
     </div>
@@ -1181,8 +1319,6 @@ function openAppointmentForm(appt, presetOpts) {
     $("#apPetChips").innerHTML = pets.length
       ? pets.map(p => `<button type="button" class="chip ${selectedPetIds.has(p.id) ? "selected" : ""}" data-pet-id="${p.id}">${esc(p.name)}</button>`).join("")
       : `<div class="tiny muted">This client has no pets yet.</div>`;
-    const repeatSection = $("#apRepeatSection");
-    if (repeatSection) repeatSection.classList.toggle("hidden", selectedPetIds.size > 1);
   }
 
   function petTotal(pid) {
@@ -1260,6 +1396,7 @@ function openAppointmentForm(appt, presetOpts) {
     else selectedPetIds.add(id);
     refreshPetOptions();
     renderServicesContainer();
+    updateRepeatPreview();
   });
   const repeatCheck = $("#apRepeat");
   function plannedRepeatDates() {
@@ -1285,8 +1422,15 @@ function openAppointmentForm(appt, presetOpts) {
     const lastLabel = last.getFullYear() === dates[0].getFullYear()
       ? fmtDate(last)
       : `${fmtDate(last)}, ${last.getFullYear()}`;
-    prev.textContent = `${dates.length} appointments · last one ${lastLabel}`
-      + (capped ? ` (capped at ${REPEAT_MAX} — shorten the end date or widen the interval to fit more)` : "");
+    // With several dogs at the stop each one gets its own appointment every
+    // time, so spell the multiplication out rather than surprising her with a
+    // pile of extra rows.
+    const petCount = petsToShow().length;
+    const head = petCount > 1
+      ? `${dates.length} visits × ${petCount} dogs = ${dates.length * petCount} appointments`
+      : `${dates.length} appointments`;
+    prev.textContent = `${head} · last one ${lastLabel}`
+      + (capped ? ` (capped at ${REPEAT_MAX} visits — shorten the end date or widen the interval to fit more)` : "");
   }
   if (repeatCheck) {
     repeatCheck.addEventListener("change", () => {
@@ -1337,12 +1481,16 @@ function openAppointmentForm(appt, presetOpts) {
     if (petIds.length === 0) { toast("Choose at least one pet"); return; }
     const multiDog = petIds.length > 1;
 
-    const repeat = !multiDog && repeatCheck && repeatCheck.checked;
+    const repeat = repeatCheck && repeatCheck.checked;
     const weeks = repeat ? Math.max(1, parseInt($("#apRepeatWeeks").value, 10) || 1) : null;
-    const visitGroupId = multiDog ? uid() : null;
     const baseDate = new Date(scheduledAt);
     const seriesDates = repeat ? plannedRepeatDates() : [baseDate];
     const count = seriesDates.length;
+    // One household group per DATE, not per booking: the two dogs on Sep 12
+    // are one visit, and the two on Oct 24 are a different one. Sharing a
+    // single id across the whole series would make "check out this household"
+    // sweep up every future visit too.
+    const visitGroupIds = seriesDates.map(() => (multiDog ? uid() : null));
 
     for (const petId of petIds) {
       let seriesId = null;
@@ -1351,8 +1499,8 @@ function openAppointmentForm(appt, presetOpts) {
         if (error) { console.error(error); toast("Couldn't create series"); return; }
         seriesId = data.id;
       }
-      const rows = seriesDates.map(d => ({
-        client_id: clientId, pet_id: petId, series_id: seriesId, visit_group_id: visitGroupId,
+      const rows = seriesDates.map((d, i) => ({
+        client_id: clientId, pet_id: petId, series_id: seriesId, visit_group_id: visitGroupIds[i],
         scheduled_at: d.toISOString(),
         duration_minutes: duration, status: "scheduled", notes,
       }));
@@ -1365,7 +1513,12 @@ function openAppointmentForm(appt, presetOpts) {
       }
     }
     await loadAll(); closeSheet(); render();
-    toast(multiDog ? `${petIds.length} dogs scheduled for this visit` : (repeat ? `${count} appointments scheduled` : "Appointment scheduled"));
+    toast(
+      multiDog && repeat ? `${petIds.length} dogs booked for ${count} visits`
+        : multiDog ? `${petIds.length} dogs scheduled for this visit`
+        : repeat ? `${count} appointments scheduled`
+        : "Appointment scheduled"
+    );
   });
 }
 
@@ -1378,19 +1531,26 @@ function openAppointmentDetail(apptId) {
   const total = apptTotal(appt.id);
   const pay = paymentForAppt(appt.id);
   const report = reportForAppt(appt.id);
-  const seriesAppts = appt.series_id ? DB.appointments.filter(a => a.series_id === appt.series_id) : [];
-  const seriesRemaining = seriesAppts.filter(a => a.status === "scheduled" || a.status === "no_show");
   const groupSiblings = appt.visit_group_id ? DB.appointments.filter(a => a.visit_group_id === appt.visit_group_id && a.id !== appt.id) : [];
+  // A repeating multi-dog stop gives each dog its own series. Treat those
+  // parallel series as one household series, so cancelling the standing
+  // appointment doesn't have to be repeated dog by dog.
+  const householdSeriesIds = [...new Set([appt.series_id, ...groupSiblings.map(a => a.series_id)].filter(Boolean))];
+  const seriesAppts = householdSeriesIds.length
+    ? DB.appointments.filter(a => householdSeriesIds.includes(a.series_id))
+    : [];
+  const seriesRemaining = seriesAppts.filter(a => a.status === "scheduled" || a.status === "no_show");
+  const seriesDogCount = householdSeriesIds.length;
 
   const body = `
     <div class="row between" style="margin-bottom:8px;">
       <div>
         <div class="bold">${esc(pet ? pet.name : "")} <span class="muted">— ${esc(client ? client.name : "")}</span></div>
-        <div class="small muted">${fmtDateLong(appt.scheduled_at)} · ${fmtTime(appt.scheduled_at)} (${appt.duration_minutes} min)</div>
+        <div class="small muted">${fmtDateLong(appt.scheduled_at)} · ${fmtTime(appt.scheduled_at)} (${fmtDuration(appt.duration_minutes)})</div>
       </div>
       <span class="pill ${appt.status}">${STATUS_LABEL[appt.status]}</span>
     </div>
-    ${seriesAppts.length > 1 ? `<div class="tiny muted" style="margin-bottom:6px;">🔁 Part of a recurring series (${seriesAppts.length} total appointments)</div>` : ""}
+    ${seriesAppts.length > 1 ? `<div class="tiny muted" style="margin-bottom:6px;">🔁 Part of a recurring series (${seriesAppts.length} total appointments${seriesDogCount > 1 ? ` across ${seriesDogCount} dogs` : ""})</div>` : ""}
     ${groupSiblings.length ? `<div class="tiny muted" style="margin-bottom:10px;">🐾 Same visit as: ${groupSiblings.map(a => esc(getPet(a.pet_id)?.name || "")).join(", ")} · household total ${fmtMoney(total + groupSiblings.reduce((s, a) => s + apptTotal(a.id), 0))}</div>` : ""}
     ${appt.notes ? `<div class="card small" style="background:var(--surface-3);box-shadow:none;margin-bottom:10px;">${esc(appt.notes)}</div>` : ""}
     <a class="btn btn-outline btn-sm" style="margin-bottom:10px;text-decoration:none;" href="${icsDataHref(appt, pet, client)}" download="${esc((pet?.name || "appointment") + "-" + fmtDateShort(appt.scheduled_at) + ".ics")}">📅 Add to Calendar</a>
@@ -1433,7 +1593,7 @@ function openAppointmentDetail(apptId) {
     </div>
     ${groupSiblings.length ? `<button class="btn btn-outline" style="margin-top:8px;" id="rescheduleGroupBtn">Reschedule this whole visit (${groupSiblings.length + 1} dogs)</button>` : ""}
     ${groupSiblings.length ? `<button class="btn btn-primary" style="margin-top:8px;" id="groupCheckoutBtn">✅ Check out whole household (${groupSiblings.length + 1} dogs)</button>` : ""}
-    ${seriesRemaining.length > 1 ? `<button class="btn btn-danger" style="margin-top:8px;" id="deleteSeriesBtn">Delete remaining series appointments (${seriesRemaining.length})</button>` : ""}
+    ${seriesRemaining.length > 1 ? `<button class="btn btn-danger" style="margin-top:8px;" id="deleteSeriesBtn">Delete remaining series appointments (${seriesRemaining.length}${seriesDogCount > 1 ? ` · ${seriesDogCount} dogs` : ""})</button>` : ""}
   `;
   const overlay = openSheet("Appointment", body);
 
@@ -1468,7 +1628,7 @@ function openAppointmentDetail(apptId) {
 
   const deleteSeriesBtn = $("#deleteSeriesBtn");
   if (deleteSeriesBtn) deleteSeriesBtn.addEventListener("click", () => {
-    confirmDialog(`Delete all ${seriesRemaining.length} remaining scheduled appointments in this recurring series? Already-completed visits and their history will be kept.`, async () => {
+    confirmDialog(`Delete all ${seriesRemaining.length} remaining scheduled appointments in this recurring series${seriesDogCount > 1 ? ` (all ${seriesDogCount} dogs at this stop)` : ""}? Already-completed visits and their history will be kept.`, async () => {
       const ids = seriesRemaining.map(a => a.id);
       const { error } = await sb.from("appointments").delete().in("id", ids);
       if (error) { console.error(error); toast("Delete failed"); return; }
