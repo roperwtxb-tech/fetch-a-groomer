@@ -490,6 +490,26 @@ function revenueByMethodBetween(from, to) {
     .forEach(p => { map[p.method] = (map[p.method] || 0) + Number(p.amount || 0); });
   return map;
 }
+/* ---------- FORECAST / PROJECTED REVENUE ----------
+   revenueBetween() counts money actually COLLECTED. These count work that is
+   ON THE BOOKS — the value of every appointment that hasn't been cancelled or
+   no-showed — so she can see whether a day/week/month is booked up enough to
+   hit her revenue goal before it happens. */
+function bookableAppts(appts) {
+  return appts.filter(a => a.status !== "cancelled" && a.status !== "no_show");
+}
+function projectedRevenueBetween(from, to) {
+  return bookableAppts(DB.appointments)
+    .filter(a => { const d = new Date(a.scheduled_at); return d >= from && d < to; })
+    .reduce((s, a) => s + apptTotal(a.id), 0);
+}
+function dayForecast(date) {
+  const appts = bookableAppts(apptsOnDay(date));
+  const total = appts.reduce((s, a) => s + apptTotal(a.id), 0);
+  const done = appts.filter(a => a.status === "completed").reduce((s, a) => s + apptTotal(a.id), 0);
+  return { appts, total, done, remaining: total - done, dogs: appts.length };
+}
+
 function outstandingBalances() {
   // Only visits that have actually happened count as money owed — a future
   // scheduled (including recurring) appointment isn't a balance yet.
@@ -538,13 +558,16 @@ function renderDashboard() {
     .slice(0, 5);
 
   const repeats = repeatClients();
+  const todayFc = dayForecast(now);
 
   return `
     <div class="stat-grid" style="margin-bottom:6px;">
       <div class="stat-tile"><div class="val">${fmtMoney(revenueBetween(startWeek, addDays(startWeek, 7)))}</div><div class="lbl">This week's revenue</div></div>
+      <div class="stat-tile"><div class="val" style="color:var(--teal-600)">${fmtMoney(projectedRevenueBetween(startWeek, addDays(startWeek, 7)))}</div><div class="lbl">Projected this week</div></div>
       <div class="stat-tile"><div class="val">${fmtMoney(revenueBetween(startMonth, endMonth))}</div><div class="lbl">This month's revenue</div></div>
+      <div class="stat-tile"><div class="val" style="color:var(--teal-600)">${fmtMoney(projectedRevenueBetween(startMonth, endMonth))}</div><div class="lbl">Projected this month</div></div>
       <div class="stat-tile"><div class="val" style="color:${outstandingTotal > 0 ? "var(--orange-600)" : "var(--ink-900)"}">${fmtMoney(outstandingTotal)}</div><div class="lbl">Outstanding balance</div></div>
-      <div class="stat-tile"><div class="val">${upcoming.length}</div><div class="lbl">Upcoming (next visits)</div></div>
+      <div class="stat-tile"><div class="val" style="color:var(--teal-600)">${fmtMoney(todayFc.total)}</div><div class="lbl">Today's forecast · ${todayFc.dogs} ${todayFc.dogs === 1 ? "dog" : "dogs"}</div></div>
     </div>
 
     <div class="section-title">Revenue by payment method</div>
@@ -945,6 +968,27 @@ function calHeaderLabel() {
   if (UI.calMode === "week") { const s = addDays(startOfDay(UI.calDate), -UI.calDate.getDay()); return `${fmtDateShort(s)} – ${fmtDateShort(addDays(s, 6))}`; }
   return fmtDateLong(UI.calDate);
 }
+function forecastBox(label, total, sub, right) {
+  return `
+    <div class="card" style="background:var(--teal-100);box-shadow:none;border:1px solid var(--teal-500);">
+      <div class="row between" style="align-items:flex-start;">
+        <div style="min-width:0;">
+          <div class="tiny bold" style="text-transform:uppercase;letter-spacing:.04em;color:var(--teal-700);">${esc(label)}</div>
+          <div class="bold" style="font-size:25px;line-height:1.15;color:var(--teal-900);margin-top:1px;">${fmtMoney(total)}</div>
+          ${sub ? `<div class="tiny" style="color:var(--teal-700);">${esc(sub)}</div>` : ""}
+        </div>
+        ${right || ""}
+      </div>
+    </div>`;
+}
+function dayForecastBox(date) {
+  const f = dayForecast(date);
+  const right = f.total > 0 ? `<div style="text-align:right;flex-shrink:0;padding-left:10px;">
+      <div class="tiny" style="color:var(--teal-700);">Completed ${fmtMoney(f.done)}</div>
+      <div class="tiny" style="color:var(--teal-700);">Still to go ${fmtMoney(f.remaining)}</div>
+    </div>` : "";
+  return forecastBox("Forecasted revenue", f.total, `${f.dogs} ${f.dogs === 1 ? "dog" : "dogs"} booked`, right);
+}
 function renderMonthGrid() {
   const y = UI.calDate.getFullYear(), m = UI.calDate.getMonth();
   const first = new Date(y, m, 1);
@@ -968,22 +1012,35 @@ function renderMonthGrid() {
       }).join("")}
     </div>
     <div class="section-title">${sameDay(UI.selectedDate, today) ? "Today" : fmtDate(UI.selectedDate)}</div>
+    ${dayForecastBox(UI.selectedDate)}
     ${renderAgendaList(apptsOnDay(UI.selectedDate))}
   `;
 }
 function renderWeekAgenda() {
   const start = addDays(startOfDay(UI.calDate), -UI.calDate.getDay());
   const days = Array.from({ length: 7 }, (_, i) => addDays(start, i));
-  return `<div class="week-row">${days.map(d => {
-    const appts = apptsOnDay(d);
-    return `<div class="week-day-card">
-      <div class="wd-head">${fmtDate(d)}</div>
-      ${appts.length === 0 ? `<div class="tiny muted">No appointments</div>` :
-        appts.map(a => renderApptAgendaRow(a)).join("")}
-    </div>`;
-  }).join("")}</div>`;
+  const weekTotal = projectedRevenueBetween(start, addDays(start, 7));
+  const weekDogs = bookableAppts(DB.appointments).filter(a => {
+    const d = new Date(a.scheduled_at); return d >= start && d < addDays(start, 7);
+  }).length;
+  return `
+    ${forecastBox("Forecasted this week", weekTotal, `${weekDogs} ${weekDogs === 1 ? "dog" : "dogs"} booked`)}
+    <div class="week-row">${days.map(d => {
+      const appts = apptsOnDay(d);
+      const dayTotal = dayForecast(d).total;
+      return `<div class="week-day-card">
+        <div class="wd-head" style="display:flex;justify-content:space-between;gap:8px;">
+          <span>${fmtDate(d)}</span>
+          ${dayTotal > 0 ? `<span style="color:var(--teal-700);">${fmtMoney(dayTotal)}</span>` : ""}
+        </div>
+        ${appts.length === 0 ? `<div class="tiny muted">No appointments</div>` :
+          appts.map(a => renderApptAgendaRow(a)).join("")}
+      </div>`;
+    }).join("")}</div>`;
 }
-function renderDayAgenda() { return renderAgendaList(apptsOnDay(UI.calDate)); }
+function renderDayAgenda() {
+  return `${dayForecastBox(UI.calDate)}${renderAgendaList(apptsOnDay(UI.calDate))}`;
+}
 function renderAgendaList(appts) {
   if (appts.length === 0) return `<div class="card empty small"><div class="ic">📭</div>No appointments this day.</div>`;
   return `<div class="card">${appts.map(a => renderApptAgendaRow(a)).join("")}</div>`;
