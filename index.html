@@ -1272,7 +1272,7 @@ function openAppointmentDetail(apptId) {
       <span class="pill ${appt.status}">${STATUS_LABEL[appt.status]}</span>
     </div>
     ${seriesAppts.length > 1 ? `<div class="tiny muted" style="margin-bottom:6px;">🔁 Part of a recurring series (${seriesAppts.length} total appointments)</div>` : ""}
-    ${groupSiblings.length ? `<div class="tiny muted" style="margin-bottom:10px;">🐾 Same visit as: ${groupSiblings.map(a => esc(getPet(a.pet_id)?.name || "")).join(", ")}</div>` : ""}
+    ${groupSiblings.length ? `<div class="tiny muted" style="margin-bottom:10px;">🐾 Same visit as: ${groupSiblings.map(a => esc(getPet(a.pet_id)?.name || "")).join(", ")} · household total ${fmtMoney(total + groupSiblings.reduce((s, a) => s + apptTotal(a.id), 0))}</div>` : ""}
     ${appt.notes ? `<div class="card small" style="background:var(--surface-3);box-shadow:none;margin-bottom:10px;">${esc(appt.notes)}</div>` : ""}
     <a class="btn btn-outline btn-sm" style="margin-bottom:10px;text-decoration:none;" href="${icsDataHref(appt, pet, client)}" download="${esc((pet?.name || "appointment") + "-" + fmtDateShort(appt.scheduled_at) + ".ics")}">📅 Add to Calendar</a>
 
@@ -1305,6 +1305,7 @@ function openAppointmentDetail(apptId) {
 
     <div class="section-title">Visit report</div>
     <button class="btn btn-outline" id="reportBtn">${report ? "View / edit visit report" : "Create visit report"}</button>
+    ${groupSiblings.length ? `<button class="btn btn-outline" style="margin-top:8px;" id="householdReportBtn">🔗 View / print / share household report (${groupSiblings.length + 1} dogs)</button>` : ""}
 
     <div class="section-title">Manage</div>
     <div class="btn-row">
@@ -1312,6 +1313,7 @@ function openAppointmentDetail(apptId) {
       <button class="btn btn-danger" id="deleteApptBtn">Delete</button>
     </div>
     ${groupSiblings.length ? `<button class="btn btn-outline" style="margin-top:8px;" id="rescheduleGroupBtn">Reschedule this whole visit (${groupSiblings.length + 1} dogs)</button>` : ""}
+    ${groupSiblings.length ? `<button class="btn btn-primary" style="margin-top:8px;" id="groupCheckoutBtn">✅ Check out whole household (${groupSiblings.length + 1} dogs)</button>` : ""}
     ${seriesRemaining.length > 1 ? `<button class="btn btn-danger" style="margin-top:8px;" id="deleteSeriesBtn">Delete remaining series appointments (${seriesRemaining.length})</button>` : ""}
   `;
   const overlay = openSheet("Appointment", body);
@@ -1370,6 +1372,54 @@ function openAppointmentDetail(apptId) {
       const { error } = await sb.from("appointments").update({ scheduled_at: iso, updated_at: new Date().toISOString() }).in("id", ids);
       if (error) { console.error(error); toast("Save failed"); return; }
       await loadAll(); closeSheet(); render(); toast("Visit rescheduled");
+    });
+  });
+
+  const householdReportBtn = $("#householdReportBtn");
+  if (householdReportBtn) householdReportBtn.addEventListener("click", () => {
+    const url = new URL(window.location.href);
+    url.search = `?reportGroup=${appt.visit_group_id}`;
+    window.open(url.toString(), "_blank");
+  });
+
+  const groupCheckoutBtn = $("#groupCheckoutBtn");
+  if (groupCheckoutBtn) groupCheckoutBtn.addEventListener("click", () => {
+    const allAppts = [appt, ...groupSiblings];
+    const grandTotal = allAppts.reduce((s, a) => s + apptTotal(a.id), 0);
+    const rows = allAppts.map(a => {
+      const p = getPet(a.pet_id);
+      return `<div class="row between small" style="padding:3px 0;"><span>${esc(p?.name || "")}</span><span>${fmtMoney(apptTotal(a.id))}</span></div>`;
+    }).join("");
+    openSheet("Check Out Whole Household", `
+      <p class="muted small" style="margin-bottom:12px;">Marks all ${allAppts.length} dogs from this visit as completed and records a payment for each — each dog keeps its own amount, so nothing gets double-counted on the dashboard.</p>
+      <div class="card small" style="margin-bottom:14px;">
+        ${rows}
+        <div class="row between bold" style="border-top:1px solid var(--border);margin-top:8px;padding-top:8px;"><span>Grand total</span><span>${fmtMoney(grandTotal)}</span></div>
+      </div>
+      <div class="field"><label>Method</label>
+        <select id="groupPayMethod">${Object.entries(PAYMENT_METHOD_LABEL).map(([k, v]) => `<option value="${k}" ${(pay?.method || "cash") === k ? "selected" : ""}>${v}</option>`).join("")}</select>
+      </div>
+      <div class="checkrow"><input type="checkbox" id="groupPayPaid" checked> <label for="groupPayPaid" style="margin:0;font-weight:600;font-size:13.5px;">Marked paid</label></div>
+      <button class="btn btn-primary" id="groupCheckoutSaveBtn" style="width:100%;margin-top:12px;">Check out all ${allAppts.length} dogs</button>
+    `);
+    $("#groupCheckoutSaveBtn").addEventListener("click", async () => {
+      const method = $("#groupPayMethod").value;
+      const paid = $("#groupPayPaid").checked;
+      const paidAt = paid ? new Date().toISOString() : null;
+      for (const a of allAppts) {
+        const amount = apptTotal(a.id);
+        const existingPay = paymentForAppt(a.id);
+        const payload = { appointment_id: a.id, amount, method, paid, paid_at: paidAt };
+        let error;
+        if (existingPay) ({ error } = await sb.from("payments").update(payload).eq("id", existingPay.id));
+        else ({ error } = await sb.from("payments").insert(payload));
+        if (error) { console.error(error); toast("Save failed"); return; }
+        ({ error } = await sb.from("appointments").update({ status: "completed", updated_at: new Date().toISOString() }).eq("id", a.id));
+        if (error) { console.error(error); toast("Save failed"); return; }
+      }
+      await loadAll(); closeSheet(); render();
+      toast(`Checked out ${allAppts.length} dogs — ${fmtMoney(grandTotal)} total`);
+      openAppointmentDetail(appt.id);
     });
   });
 }
@@ -1560,6 +1610,38 @@ async function openVisitReportEditor(apptId) {
 }
 
 /* ---------- STANDALONE SHAREABLE / PRINTABLE REPORT PAGE ---------- */
+function reportCloseButtonHtml() {
+  return `<button id="reportCloseBtn" class="no-print" aria-label="Close report" style="position:fixed;top:14px;right:14px;z-index:50;width:38px;height:38px;border-radius:50%;border:1px solid var(--border);background:var(--surface-1,#fff);box-shadow:0 2px 8px rgba(0,0,0,.15);font-size:18px;line-height:1;display:flex;align-items:center;justify-content:center;">✕</button>`;
+}
+function reportGroupsHtml(report) {
+  return REPORT_GROUPS.map(g => {
+    const checked = (report[g.key] || []).map(v => g.options.find(o => o.v === v)).filter(Boolean);
+    if (!checked.length) return "";
+    return `<div class="card small" style="box-shadow:none;background:var(--surface-3);">
+      <div class="tiny bold" style="text-transform:uppercase;letter-spacing:.03em;color:var(--ink-500);margin-bottom:4px;">${g.icon} ${esc(g.title)}</div>
+      ${checked.map(o => `<div style="padding:2px 0;">✓ ${esc(o.l)}${o.sub ? ` <span class="muted tiny">— ${esc(o.sub)}</span>` : ""}</div>`).join("")}
+    </div>`;
+  }).join("");
+}
+function photoGridHtml(label, list) {
+  if (!list.length) return "";
+  return `<div class="section-title">${label}</div><div class="photo-grid">${list.map(p => `<div class="photo-slot"><img src="${esc(p.photo_url)}"></div>`).join("")}</div>`;
+}
+function attachReportLeaveHandlers() {
+  // If this report was opened in its own tab (e.g. via a share/print button),
+  // try closing that tab first. If the browser won't allow it (page wasn't
+  // opened by script, or it's the only tab), fall back to navigating back to
+  // the main app in the same tab.
+  const leaveReport = () => {
+    window.close();
+    setTimeout(() => { window.location.href = window.location.pathname; }, 150);
+  };
+  const closeBtn = document.getElementById("reportCloseBtn");
+  const backBtn = document.getElementById("reportBackBtn");
+  if (closeBtn) closeBtn.addEventListener("click", leaveReport);
+  if (backBtn) backBtn.addEventListener("click", leaveReport);
+}
+
 async function renderStandaloneReport(reportId) {
   document.body.innerHTML = `<div id="loading"><div class="spinner"></div><div>Loading report…</div></div>`;
   const { data: report, error } = await sb.from("visit_reports").select("*").eq("id", reportId).single();
@@ -1582,7 +1664,7 @@ async function renderStandaloneReport(reportId) {
 
   document.body.innerHTML = `
     <div class="report-page" style="padding:20px 18px 60px;">
-      <button id="reportCloseBtn" class="no-print" aria-label="Close report" style="position:fixed;top:14px;right:14px;z-index:50;width:38px;height:38px;border-radius:50%;border:1px solid var(--border);background:var(--surface-1,#fff);box-shadow:0 2px 8px rgba(0,0,0,.15);font-size:18px;line-height:1;display:flex;align-items:center;justify-content:center;">✕</button>
+      ${reportCloseButtonHtml()}
       <div class="report-brand">
         <div class="name">🐾 Fetch A Groomer</div>
         <div class="muted small">Grooming Visit Report</div>
@@ -1596,18 +1678,11 @@ async function renderStandaloneReport(reportId) {
         ${services.map(s => `<div class="row between small" style="padding:3px 0;"><span>${esc(s.service_name)}</span><span>${fmtMoney(s.price)}</span></div>`).join("")}
         <div class="row between bold" style="border-top:1px solid var(--border);margin-top:8px;padding-top:8px;"><span>Total</span><span>${fmtMoney(total)}</span></div>
       </div>` : ""}
-      ${REPORT_GROUPS.map(g => {
-        const checked = (report[g.key] || []).map(v => g.options.find(o => o.v === v)).filter(Boolean);
-        if (!checked.length) return "";
-        return `<div class="card small" style="box-shadow:none;background:var(--surface-3);">
-          <div class="tiny bold" style="text-transform:uppercase;letter-spacing:.03em;color:var(--ink-500);margin-bottom:4px;">${g.icon} ${esc(g.title)}</div>
-          ${checked.map(o => `<div style="padding:2px 0;">✓ ${esc(o.l)}${o.sub ? ` <span class="muted tiny">— ${esc(o.sub)}</span>` : ""}</div>`).join("")}
-        </div>`;
-      }).join("")}
+      ${reportGroupsHtml(report)}
       ${report.groomer_notes ? infoRow("Additional notes", report.groomer_notes) : ""}
       ${report.next_visit_date ? infoRow("Next scheduled visit", fmtDateLong(parseDateOnly(report.next_visit_date))) : ""}
-      ${before.length ? `<div class="section-title">Before</div><div class="photo-grid">${before.map(p => `<div class="photo-slot"><img src="${esc(p.photo_url)}"></div>`).join("")}</div>` : ""}
-      ${after.length ? `<div class="section-title">After</div><div class="photo-grid">${after.map(p => `<div class="photo-slot"><img src="${esc(p.photo_url)}"></div>`).join("")}</div>` : ""}
+      ${photoGridHtml("Before", before)}
+      ${photoGridHtml("After", after)}
       <div class="btn-row no-print" style="margin-top:22px;gap:8px;">
         <button class="btn btn-outline" id="reportBackBtn">← Back to App</button>
         <button class="btn btn-primary" onclick="window.print()">Print / Save as PDF</button>
@@ -1615,16 +1690,88 @@ async function renderStandaloneReport(reportId) {
     </div>
     <div id="toast"></div>
   `;
-  const leaveReport = () => {
-    // If this report was opened in its own tab (e.g. via the share/print button),
-    // try closing that tab first. If the browser won't allow it (page wasn't
-    // opened by script, or it's the only tab), fall back to navigating back to
-    // the main app in the same tab.
-    window.close();
-    setTimeout(() => { window.location.href = window.location.pathname; }, 150);
-  };
-  $("#reportCloseBtn").addEventListener("click", leaveReport);
-  $("#reportBackBtn").addEventListener("click", leaveReport);
+  attachReportLeaveHandlers();
+}
+
+/* ---------- STANDALONE SHAREABLE / PRINTABLE HOUSEHOLD REPORT PAGE (multi-dog visit) ---------- */
+async function renderStandaloneGroupReport(groupId) {
+  document.body.innerHTML = `<div id="loading"><div class="spinner"></div><div>Loading report…</div></div>`;
+  const { data: appts, error } = await sb.from("appointments").select("*").eq("visit_group_id", groupId);
+  if (error || !appts || !appts.length) {
+    document.body.innerHTML = `<div style="padding:40px 20px;text-align:center;font-family:sans-serif;">Report not found. It may have been deleted.</div>`;
+    return;
+  }
+  const apptIds = appts.map(a => a.id);
+  const petIds = [...new Set(appts.map(a => a.pet_id))];
+  const [{ data: pets }, { data: allServices }, { data: allReports }] = await Promise.all([
+    sb.from("pets").select("*").in("id", petIds),
+    sb.from("appointment_services").select("*").in("appointment_id", apptIds),
+    sb.from("visit_reports").select("*").in("appointment_id", apptIds),
+  ]);
+  const reportIds = (allReports || []).map(r => r.id);
+  let allPhotos = [];
+  if (reportIds.length) {
+    const { data } = await sb.from("visit_report_photos").select("*").in("visit_report_id", reportIds);
+    allPhotos = data || [];
+  }
+  let client = null;
+  { const { data } = await sb.from("clients").select("*").eq("id", appts[0].client_id).single(); client = data; }
+
+  // Stable, readable order: by pet name.
+  appts.sort((a, b) => {
+    const pa = (pets || []).find(p => p.id === a.pet_id)?.name || "";
+    const pb = (pets || []).find(p => p.id === b.pet_id)?.name || "";
+    return pa.localeCompare(pb);
+  });
+
+  const grandTotal = (allServices || []).reduce((s, x) => s + Number(x.price || 0), 0);
+
+  const dogSections = appts.map(appt => {
+    const pet = (pets || []).find(p => p.id === appt.pet_id);
+    const services = (allServices || []).filter(s => s.appointment_id === appt.id);
+    const report = (allReports || []).find(r => r.appointment_id === appt.id);
+    const dogTotal = services.reduce((s, x) => s + Number(x.price || 0), 0);
+    const photos = report ? allPhotos.filter(p => p.visit_report_id === report.id) : [];
+    const before = photos.filter(p => p.kind === "before");
+    const after = photos.filter(p => p.kind === "after");
+    return `
+      <div class="card" style="margin-top:14px;">
+        <div class="row between"><span class="bold" style="font-size:16px;">${esc(pet?.name || "Pet")}</span><span class="muted small">${fmtMoney(dogTotal)}</span></div>
+        ${services.length ? `<div style="margin-top:6px;">
+          ${services.map(s => `<div class="row between small" style="padding:2px 0;"><span>${esc(s.service_name)}</span><span>${fmtMoney(s.price)}</span></div>`).join("")}
+        </div>` : `<div class="small muted" style="margin-top:6px;">No services recorded.</div>`}
+        ${report ? reportGroupsHtml(report) : `<div class="small muted" style="margin-top:8px;">No visit report yet for this dog.</div>`}
+        ${report?.groomer_notes ? infoRow("Additional notes", report.groomer_notes) : ""}
+        ${report?.next_visit_date ? infoRow("Next scheduled visit", fmtDateLong(parseDateOnly(report.next_visit_date))) : ""}
+        ${photoGridHtml("Before", before)}
+        ${photoGridHtml("After", after)}
+      </div>
+    `;
+  }).join("");
+
+  document.body.innerHTML = `
+    <div class="report-page" style="padding:20px 18px 60px;">
+      ${reportCloseButtonHtml()}
+      <div class="report-brand">
+        <div class="name">🐾 Fetch A Groomer</div>
+        <div class="muted small">Household Grooming Visit Report</div>
+      </div>
+      <div class="card">
+        <div class="row between"><span class="bold" style="font-size:17px;">${esc(client?.name || "")}</span><span class="muted small">${fmtDateLong(appts[0].scheduled_at)}</span></div>
+        <div class="muted small" style="margin-top:2px;">${appts.length} dogs</div>
+      </div>
+      ${dogSections}
+      <div class="card" style="margin-top:14px;">
+        <div class="row between bold"><span>Household total</span><span>${fmtMoney(grandTotal)}</span></div>
+      </div>
+      <div class="btn-row no-print" style="margin-top:22px;gap:8px;">
+        <button class="btn btn-outline" id="reportBackBtn">← Back to App</button>
+        <button class="btn btn-primary" onclick="window.print()">Print / Save as PDF</button>
+      </div>
+    </div>
+    <div id="toast"></div>
+  `;
+  attachReportLeaveHandlers();
 }
 
 /* =====================================================================
@@ -1725,6 +1872,8 @@ async function boot() {
   const params = new URLSearchParams(window.location.search);
   const reportId = params.get("report");
   if (reportId) { await renderStandaloneReport(reportId); return; }
+  const reportGroupId = params.get("reportGroup");
+  if (reportGroupId) { await renderStandaloneGroupReport(reportGroupId); return; }
 
   setLoading(true);
   try {
