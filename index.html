@@ -276,6 +276,9 @@ const CFG = {
 };
 const sb = createClient(CFG.url, CFG.key);
 const BUCKET = "visit-photos";
+// Shown at the bottom of the dashboard so it's possible to confirm at a glance
+// which build is actually running after an upload. Bump this on every release.
+const APP_VERSION = "2026.08.15";
 
 /* ---------- STATE ---------- */
 const DB = {
@@ -652,6 +655,8 @@ function renderDashboard() {
           <div class="pill">${r.count} visits</div>
         </div>
       `).join("") + `</div>`}
+
+    <div class="tiny muted" style="text-align:center;margin:18px 0 4px;">Version ${esc(APP_VERSION)}</div>
   `;
 }
 
@@ -2004,7 +2009,14 @@ async function boot() {
   render();
 
   if ("serviceWorker" in navigator) {
+    // Whether a worker was already driving this page BEFORE registration. On a
+    // first-ever visit there isn't one, and the handover that follows is just
+    // normal setup — not an update worth mentioning.
+    const hadController = !!navigator.serviceWorker.controller;
     navigator.serviceWorker.register("sw.js").catch(() => {});
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (hadController) toast("App updated — close and reopen to finish");
+    });
   }
 }
 boot();
