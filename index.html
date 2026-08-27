@@ -278,12 +278,13 @@ const sb = createClient(CFG.url, CFG.key);
 const BUCKET = "visit-photos";
 // Shown at the bottom of the dashboard so it's possible to confirm at a glance
 // which build is actually running after an upload. Bump this on every release.
-const APP_VERSION = "2026.08.15d";
+const APP_VERSION = "2026.08.27";
 
 /* ---------- STATE ---------- */
 const DB = {
-  clients: [], pets: [], services: [], appointments: [],
+  clients: [], pets: [], services: [], appointments: [], appointmentSeries: [],
   appointmentServices: [], payments: [], visitReports: [], visitReportPhotos: [],
+  timeEntries: [],
 };
 const UI = {
   tab: "dashboard",
@@ -418,27 +419,31 @@ function confirmDialog(msg, onYes) {
 
 /* ---------- DATA LOADING ---------- */
 async function loadAll() {
-  const [clients, pets, services, appointments, appointmentServices, payments, visitReports, visitReportPhotos] = await Promise.all([
+  const [clients, pets, services, appointments, appointmentSeries, appointmentServices, payments, visitReports, visitReportPhotos, timeEntries] = await Promise.all([
     sb.from("clients").select("*").order("name"),
     sb.from("pets").select("*").order("name"),
     sb.from("services").select("*").order("sort_order"),
     sb.from("appointments").select("*").order("scheduled_at"),
+    sb.from("appointment_series").select("*"),
     sb.from("appointment_services").select("*"),
     sb.from("payments").select("*"),
     sb.from("visit_reports").select("*"),
     sb.from("visit_report_photos").select("*"),
+    sb.from("time_entries").select("*").order("clock_in"),
   ]);
-  for (const [name, res] of Object.entries({ clients, pets, services, appointments, appointmentServices, payments, visitReports, visitReportPhotos })) {
+  for (const [name, res] of Object.entries({ clients, pets, services, appointments, appointmentSeries, appointmentServices, payments, visitReports, visitReportPhotos, timeEntries })) {
     if (res.error) { console.error(name, res.error); toast("Couldn't load " + name); }
   }
   DB.clients = clients.data || [];
   DB.pets = pets.data || [];
   DB.services = services.data || [];
   DB.appointments = appointments.data || [];
+  DB.appointmentSeries = appointmentSeries.data || [];
   DB.appointmentServices = appointmentServices.data || [];
   DB.payments = payments.data || [];
   DB.visitReports = visitReports.data || [];
   DB.visitReportPhotos = visitReportPhotos.data || [];
+  DB.timeEntries = timeEntries.data || [];
 }
 
 /* ---------- LOOKUP HELPERS ---------- */
@@ -526,6 +531,41 @@ function revenueByMethodBetween(from, to) {
   DB.payments.filter(p => p.paid && p.paid_at && new Date(p.paid_at) >= from && new Date(p.paid_at) < to)
     .forEach(p => { map[p.method] = (map[p.method] || 0) + Number(p.amount || 0); });
   return map;
+}
+// Tips are tracked alongside the grooming charge but kept separate everywhere,
+// so "what did I make grooming" and "what did I make in tips" stay answerable.
+function tipsBetween(from, to) {
+  return DB.payments
+    .filter(p => p.paid && p.paid_at && new Date(p.paid_at) >= from && new Date(p.paid_at) < to)
+    .reduce((s, p) => s + Number(p.tip || 0), 0);
+}
+
+/* ---------- TIME CARD ---------- */
+function openShift() { return DB.timeEntries.find(t => !t.clock_out) || null; }
+function entryMs(t, now) {
+  const start = new Date(t.clock_in);
+  const end = t.clock_out ? new Date(t.clock_out) : (now || new Date());
+  return Math.max(0, end - start);
+}
+// Hours worked in a window. A shift is counted by when it STARTED, which keeps
+// a day's hours on that day even if she clocks out after midnight.
+function hoursBetween(from, to, now) {
+  const ms = DB.timeEntries
+    .filter(t => { const d = new Date(t.clock_in); return d >= from && d < to; })
+    .reduce((s, t) => s + entryMs(t, now), 0);
+  return ms / 3600000;
+}
+function fmtHours(h) {
+  const total = Math.round(h * 60);
+  const hh = Math.floor(total / 60), mm = total % 60;
+  if (!hh && !mm) return "0m";
+  return hh ? `${hh}h ${mm}m` : `${mm}m`;
+}
+function fmtElapsed(ms) {
+  const s = Math.floor(ms / 1000);
+  const hh = Math.floor(s / 3600), mm = Math.floor((s % 3600) / 60), ss = s % 60;
+  const p = n => String(n).padStart(2, "0");
+  return `${hh}:${p(mm)}:${p(ss)}`;
 }
 /* ---------- FORECAST / PROJECTED REVENUE ----------
    revenueBetween() counts money actually COLLECTED. These count work that is
@@ -624,7 +664,8 @@ function clientsCSV() {
 function appointmentsCSV() {
   const header = [
     "Date", "Time", "Client", "Pet", "Status", "Services", "Amount due",
-    "Paid", "Amount paid", "Method", "Paid on", "Visit notes", "Multi-dog visit",
+    "Paid", "Amount paid", "Tip", "Total received", "Method", "Paid on",
+    "Visit notes", "Multi-dog visit",
   ];
   const rows = [header];
   const appts = DB.appointments.slice().sort((a, b) => new Date(a.scheduled_at) - new Date(b.scheduled_at));
@@ -641,10 +682,32 @@ function appointmentsCSV() {
       apptTotal(a.id).toFixed(2),
       pay?.paid ? "Yes" : "No",
       pay?.paid ? Number(pay.amount || 0).toFixed(2) : "",
+      pay?.paid ? Number(pay.tip || 0).toFixed(2) : "",
+      pay?.paid ? (Number(pay.amount || 0) + Number(pay.tip || 0)).toFixed(2) : "",
       pay?.paid ? (PAYMENT_METHOD_LABEL[pay.method] || pay.method || "") : "",
       pay?.paid && pay.paid_at ? toDateOnlyLocal(pay.paid_at) : "",
       a.notes,
       a.visit_group_id ? "Yes" : "No",
+    ]);
+  }
+  return toCSV(rows);
+}
+
+// One row per shift, with the hours already worked out so she can pivot on it.
+function timeEntriesCSV() {
+  const header = ["Date", "Clocked in", "Clocked out", "Hours (decimal)", "Hours (h:mm)", "Notes"];
+  const rows = [header];
+  const now = new Date();
+  const entries = DB.timeEntries.slice().sort((a, b) => new Date(a.clock_in) - new Date(b.clock_in));
+  for (const t of entries) {
+    const hrs = t.clock_out ? entryMs(t, now) / 3600000 : null;
+    rows.push([
+      toDateOnlyLocal(t.clock_in),
+      fmtTime(t.clock_in),
+      t.clock_out ? fmtTime(t.clock_out) : "(still on the clock)",
+      hrs === null ? "" : hrs.toFixed(2),
+      hrs === null ? "" : fmtHours(hrs),
+      t.notes,
     ]);
   }
   return toCSV(rows);
@@ -700,7 +763,71 @@ function renderDashboard() {
   const repeats = repeatClients();
   const todayFc = dayForecast(now);
 
+  const shift = openShift();
+  const weekEnd = addDays(startWeek, 7);
+  const earn = {
+    weekGroom: revenueBetween(startWeek, weekEnd), weekTips: tipsBetween(startWeek, weekEnd),
+    monthGroom: revenueBetween(startMonth, endMonth), monthTips: tipsBetween(startMonth, endMonth),
+    weekHours: hoursBetween(startWeek, weekEnd, now), monthHours: hoursBetween(startMonth, endMonth, now),
+  };
+  const perHour = (money, hours) => (hours > 0.0001 ? fmtMoney(money / hours) + "/hr" : "—");
+
   return `
+    <div class="card" style="${shift ? "background:var(--teal-100);border:1px solid var(--teal-500);" : ""}box-shadow:${shift ? "none" : "var(--shadow)"};">
+      ${shift ? `
+        <div class="row between" style="align-items:center;">
+          <div style="min-width:0;">
+            <div class="tiny bold" style="text-transform:uppercase;letter-spacing:.04em;color:var(--teal-700);">On the clock</div>
+            <div class="bold" style="font-size:25px;line-height:1.15;color:var(--teal-900);" id="shiftElapsed">${fmtElapsed(entryMs(shift, now))}</div>
+            <div class="tiny" style="color:var(--teal-700);">Started ${fmtTime(shift.clock_in)}</div>
+          </div>
+          <button class="btn btn-primary btn-sm" id="clockOutBtn" style="flex-shrink:0;">Clock out</button>
+        </div>
+      ` : `
+        <div class="row between" style="align-items:center;">
+          <div style="min-width:0;">
+            <div class="tiny bold muted" style="text-transform:uppercase;letter-spacing:.04em;">Time card</div>
+            <div class="bold" style="font-size:17px;">${fmtHours(earn.weekHours)} this week</div>
+          </div>
+          <button class="btn btn-primary btn-sm" id="clockInBtn" style="flex-shrink:0;">Clock in</button>
+        </div>
+      `}
+      <button class="btn btn-outline btn-sm" id="timeCardBtn" style="width:100%;margin-top:10px;">🕐 View / edit time card</button>
+    </div>
+
+    <div class="section-title">Earnings</div>
+    <div class="card">
+      <div class="row between tiny bold muted" style="text-transform:uppercase;letter-spacing:.03em;padding-bottom:6px;border-bottom:1px solid var(--border);">
+        <span style="flex:1;"></span><span style="width:88px;text-align:right;">This week</span><span style="width:88px;text-align:right;">This month</span>
+      </div>
+      <div class="row between small" style="padding:7px 0;">
+        <span style="flex:1;">Grooming</span>
+        <span style="width:88px;text-align:right;">${fmtMoney(earn.weekGroom)}</span>
+        <span style="width:88px;text-align:right;">${fmtMoney(earn.monthGroom)}</span>
+      </div>
+      <div class="row between small" style="padding:7px 0;border-top:1px solid var(--border);">
+        <span style="flex:1;">Tips</span>
+        <span style="width:88px;text-align:right;color:var(--teal-600);font-weight:700;">${fmtMoney(earn.weekTips)}</span>
+        <span style="width:88px;text-align:right;color:var(--teal-600);font-weight:700;">${fmtMoney(earn.monthTips)}</span>
+      </div>
+      <div class="row between bold" style="padding:8px 0;border-top:1.5px solid var(--border);">
+        <span style="flex:1;">Total</span>
+        <span style="width:88px;text-align:right;">${fmtMoney(earn.weekGroom + earn.weekTips)}</span>
+        <span style="width:88px;text-align:right;">${fmtMoney(earn.monthGroom + earn.monthTips)}</span>
+      </div>
+      <div class="row between small" style="padding:7px 0;border-top:1px solid var(--border);">
+        <span style="flex:1;" class="muted">Hours worked</span>
+        <span style="width:88px;text-align:right;">${fmtHours(earn.weekHours)}</span>
+        <span style="width:88px;text-align:right;">${fmtHours(earn.monthHours)}</span>
+      </div>
+      <div class="row between small" style="padding:7px 0;border-top:1px solid var(--border);">
+        <span style="flex:1;" class="muted">Per hour</span>
+        <span style="width:88px;text-align:right;font-weight:700;">${perHour(earn.weekGroom + earn.weekTips, earn.weekHours)}</span>
+        <span style="width:88px;text-align:right;font-weight:700;">${perHour(earn.monthGroom + earn.monthTips, earn.monthHours)}</span>
+      </div>
+      <p class="tiny muted" style="margin:8px 0 0;">Per hour includes tips. Hours come from the time card above.</p>
+    </div>
+
     <div class="stat-grid" style="margin-bottom:6px;">
       <div class="stat-tile"><div class="val">${fmtMoney(revenueBetween(startWeek, addDays(startWeek, 7)))}</div><div class="lbl">This week's revenue</div></div>
       <div class="stat-tile"><div class="val" style="color:var(--teal-600)">${fmtMoney(projectedRevenueBetween(startWeek, addDays(startWeek, 7)))}</div><div class="lbl">Projected this week</div></div>
@@ -778,7 +905,8 @@ function renderDashboard() {
     <div class="card">
       <p class="tiny muted" style="margin:0 0 10px;">Downloads a .csv file that opens in Excel, Numbers, or Google Sheets.</p>
       <button class="btn btn-outline btn-sm" id="exportClientsBtn" style="width:100%;margin-bottom:8px;">📇 Clients &amp; pets (${DB.clients.length})</button>
-      <button class="btn btn-outline btn-sm" id="exportApptsBtn" style="width:100%;">💵 Appointments &amp; payments (${DB.appointments.length})</button>
+      <button class="btn btn-outline btn-sm" id="exportApptsBtn" style="width:100%;margin-bottom:8px;">💵 Appointments &amp; payments (${DB.appointments.length})</button>
+      <button class="btn btn-outline btn-sm" id="exportHoursBtn" style="width:100%;">🕐 Hours worked (${DB.timeEntries.length})</button>
     </div>
 
     <div class="tiny muted" style="text-align:center;margin:18px 0 4px;">Version ${esc(APP_VERSION)}</div>
@@ -800,6 +928,141 @@ function bindDashboardEvents() {
     if (!DB.appointments.length) { toast("No appointments to export yet"); return; }
     await downloadCSV(`fetch-a-groomer-appointments-${stamp()}.csv`, appointmentsCSV());
     toast("Appointments exported");
+  });
+  const expHours = $("#exportHoursBtn");
+  if (expHours) expHours.addEventListener("click", async () => {
+    if (!DB.timeEntries.length) { toast("No hours logged yet"); return; }
+    await downloadCSV(`fetch-a-groomer-hours-${stamp()}.csv`, timeEntriesCSV());
+    toast("Hours exported");
+  });
+
+  const inBtn = $("#clockInBtn");
+  if (inBtn) inBtn.addEventListener("click", async () => {
+    if (openShift()) { toast("Already clocked in"); return; }
+    const { error } = await sb.from("time_entries").insert({ clock_in: new Date().toISOString() });
+    if (error) { console.error(error); toast("Couldn't clock in"); return; }
+    await loadAll(); render(); toast("Clocked in");
+  });
+  const outBtn = $("#clockOutBtn");
+  if (outBtn) outBtn.addEventListener("click", async () => {
+    const shift = openShift();
+    if (!shift) { toast("Not clocked in"); return; }
+    const { error } = await sb.from("time_entries")
+      .update({ clock_out: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("id", shift.id);
+    if (error) { console.error(error); toast("Couldn't clock out"); return; }
+    await loadAll(); render();
+    toast(`Clocked out — ${fmtHours(entryMs({ ...shift, clock_out: new Date().toISOString() }) / 3600000)}`);
+  });
+  const tcBtn = $("#timeCardBtn");
+  if (tcBtn) tcBtn.addEventListener("click", () => openTimeCard());
+
+  startShiftTicker();
+}
+
+// Keeps the running shift clock live without re-rendering the whole dashboard
+// every second (which would fight with taps and scrolling).
+let shiftTimer = null;
+function startShiftTicker() {
+  if (shiftTimer) { clearInterval(shiftTimer); shiftTimer = null; }
+  const el = $("#shiftElapsed");
+  if (!el) return;
+  shiftTimer = setInterval(() => {
+    const node = $("#shiftElapsed");
+    const shift = openShift();
+    if (!node || !shift) { clearInterval(shiftTimer); shiftTimer = null; return; }
+    node.textContent = fmtElapsed(entryMs(shift));
+  }, 1000);
+}
+
+/* ---------- TIME CARD EDITOR ---------- */
+function openTimeCard() {
+  const now = new Date();
+  const entries = DB.timeEntries.slice().sort((a, b) => new Date(b.clock_in) - new Date(a.clock_in));
+  const startWeek = addDays(startOfDay(now), -now.getDay());
+  const startMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+  const rows = entries.slice(0, 60).map(t => {
+    const open = !t.clock_out;
+    return `<div class="row between" style="padding:9px 0;border-top:1px solid var(--border);">
+      <div style="min-width:0;flex:1;">
+        <div class="bold small">${fmtDate(t.clock_in)}</div>
+        <div class="tiny muted">${fmtTime(t.clock_in)} – ${open ? "still on the clock" : fmtTime(t.clock_out)}${t.notes ? ` · ${esc(t.notes)}` : ""}</div>
+      </div>
+      <span class="pill ${open ? "scheduled" : ""}" style="margin-right:8px;">${open ? "Open" : fmtHours(entryMs(t, now) / 3600000)}</span>
+      <button class="btn btn-outline btn-sm" data-edit-shift="${t.id}" style="flex-shrink:0;padding:5px 9px;">Edit</button>
+    </div>`;
+  }).join("");
+
+  openSheet("Time Card", `
+    <div class="stat-grid" style="margin-bottom:12px;">
+      <div class="stat-tile"><div class="val">${fmtHours(hoursBetween(startWeek, addDays(startWeek, 7), now))}</div><div class="lbl">This week</div></div>
+      <div class="stat-tile"><div class="val">${fmtHours(hoursBetween(startMonth, new Date(now.getFullYear(), now.getMonth() + 1, 1), now))}</div><div class="lbl">This month</div></div>
+    </div>
+    <button class="btn btn-secondary btn-sm" id="addShiftBtn" style="width:100%;margin-bottom:6px;">+ Add a shift by hand</button>
+    ${entries.length === 0 ? `<div class="card empty small"><div class="ic">🕐</div>No shifts logged yet.</div>` : `<div class="card">${rows}</div>`}
+    ${entries.length > 60 ? `<p class="tiny muted">Showing the 60 most recent shifts. Export for the full history.</p>` : ""}
+  `);
+
+  $("#addShiftBtn").addEventListener("click", () => openShiftForm(null));
+  document.querySelectorAll("[data-edit-shift]").forEach(b => b.addEventListener("click", () => {
+    openShiftForm(DB.timeEntries.find(t => t.id === b.dataset.editShift));
+  }));
+}
+
+function openShiftForm(entry) {
+  const isEdit = !!entry;
+  const start = entry ? new Date(entry.clock_in) : new Date();
+  const end = entry?.clock_out ? new Date(entry.clock_out) : null;
+
+  openSheet(isEdit ? "Edit Shift" : "Add Shift", `
+    <div class="field"><label>Clocked in *</label><input type="datetime-local" id="tcIn" value="${toDatetimeLocal(start)}"></div>
+    <div class="field"><label>Clocked out</label><input type="datetime-local" id="tcOut" value="${end ? toDatetimeLocal(end) : ""}">
+      <p class="tiny muted" style="margin:5px 0 0;">Leave blank if this shift is still running.</p></div>
+    <div class="field"><label>Notes</label><input type="text" id="tcNotes" value="${esc(entry?.notes || "")}" placeholder="Optional"></div>
+    <div id="tcPreview" class="tiny" style="margin:-4px 0 12px 2px;color:var(--teal-700);font-weight:600;"></div>
+    <div class="btn-row">
+      <button class="btn btn-primary" id="tcSaveBtn">${isEdit ? "Save shift" : "Add shift"}</button>
+      ${isEdit ? `<button class="btn btn-danger" id="tcDeleteBtn">Delete</button>` : ""}
+    </div>
+  `);
+
+  function updatePreview() {
+    const el = $("#tcPreview");
+    const inV = $("#tcIn").value, outV = $("#tcOut").value;
+    if (!inV) { el.textContent = ""; return; }
+    if (!outV) { el.textContent = "Still running — no end time set."; return; }
+    const ms = new Date(outV) - new Date(inV);
+    el.textContent = ms <= 0
+      ? "⚠️ Clock-out is before clock-in."
+      : `${fmtHours(ms / 3600000)} worked.`;
+  }
+  updatePreview();
+  ["#tcIn", "#tcOut"].forEach(s => $(s).addEventListener("input", updatePreview));
+
+  $("#tcSaveBtn").addEventListener("click", async () => {
+    const inV = $("#tcIn").value, outV = $("#tcOut").value;
+    if (!inV) { toast("Set a clock-in time"); return; }
+    if (outV && new Date(outV) <= new Date(inV)) { toast("Clock-out must be after clock-in"); return; }
+    const payload = {
+      clock_in: new Date(inV).toISOString(),
+      clock_out: outV ? new Date(outV).toISOString() : null,
+      notes: $("#tcNotes").value.trim() || null,
+      updated_at: new Date().toISOString(),
+    };
+    let error;
+    if (isEdit) ({ error } = await sb.from("time_entries").update(payload).eq("id", entry.id));
+    else ({ error } = await sb.from("time_entries").insert(payload));
+    if (error) { console.error(error); toast("Save failed"); return; }
+    await loadAll(); closeSheet(); render(); toast(isEdit ? "Shift saved" : "Shift added");
+  });
+
+  const del = $("#tcDeleteBtn");
+  if (del) del.addEventListener("click", () => {
+    confirmDialog("Delete this shift? Its hours will come off your totals.", async () => {
+      const { error } = await sb.from("time_entries").delete().eq("id", entry.id);
+      if (error) { console.error(error); toast("Delete failed"); return; }
+      await loadAll(); closeSheet(); render(); toast("Shift deleted");
+    });
   });
 }
 
@@ -1578,6 +1841,7 @@ function openAppointmentDetail(apptId) {
           <select id="payMethod">${Object.entries(PAYMENT_METHOD_LABEL).map(([k, v]) => `<option value="${k}" ${pay?.method === k ? "selected" : ""}>${v}</option>`).join("")}</select>
         </div>
       </div>
+      <div class="field"><label>Tip</label><input type="number" step="0.01" min="0" id="payTip" value="${pay ? (pay.tip || 0) : 0}"></div>
       <div class="checkrow"><input type="checkbox" id="payPaid" ${pay?.paid ? "checked" : ""}> <label for="payPaid" style="margin:0;font-weight:600;font-size:13.5px;">Marked paid</label></div>
       <button class="btn btn-primary btn-sm" id="paySaveBtn" style="width:100%;">Save payment</button>
     </div>
@@ -1593,6 +1857,7 @@ function openAppointmentDetail(apptId) {
     </div>
     ${groupSiblings.length ? `<button class="btn btn-outline" style="margin-top:8px;" id="rescheduleGroupBtn">Reschedule this whole visit (${groupSiblings.length + 1} dogs)</button>` : ""}
     ${groupSiblings.length ? `<button class="btn btn-primary" style="margin-top:8px;" id="groupCheckoutBtn">✅ Check out whole household (${groupSiblings.length + 1} dogs)</button>` : ""}
+    ${seriesAppts.length ? `<button class="btn btn-secondary" style="margin-top:8px;" id="extendSeriesBtn">🔁 Extend this recurring series</button>` : ""}
     ${seriesRemaining.length > 1 ? `<button class="btn btn-danger" style="margin-top:8px;" id="deleteSeriesBtn">Delete remaining series appointments (${seriesRemaining.length}${seriesDogCount > 1 ? ` · ${seriesDogCount} dogs` : ""})</button>` : ""}
   `;
   const overlay = openSheet("Appointment", body);
@@ -1607,7 +1872,8 @@ function openAppointmentDetail(apptId) {
     const amount = parseFloat($("#payAmount").value) || 0;
     const method = $("#payMethod").value;
     const paid = $("#payPaid").checked;
-    const payload = { appointment_id: appt.id, amount, method, paid, paid_at: paid ? new Date().toISOString() : null };
+    const tip = parseFloat($("#payTip").value) || 0;
+    const payload = { appointment_id: appt.id, amount, tip, method, paid, paid_at: paid ? new Date().toISOString() : null };
     let error;
     if (pay) { ({ error } = await sb.from("payments").update(payload).eq("id", pay.id)); }
     else { ({ error } = await sb.from("payments").insert(payload)); }
@@ -1654,6 +1920,9 @@ function openAppointmentDetail(apptId) {
     });
   });
 
+  const extendSeriesBtn = $("#extendSeriesBtn");
+  if (extendSeriesBtn) extendSeriesBtn.addEventListener("click", () => openExtendSeries(householdSeriesIds));
+
   const householdReportBtn = $("#householdReportBtn");
   if (householdReportBtn) householdReportBtn.addEventListener("click", () => {
     const url = new URL(window.location.href);
@@ -1678,6 +1947,7 @@ function openAppointmentDetail(apptId) {
       <div class="field"><label>Method</label>
         <select id="groupPayMethod">${Object.entries(PAYMENT_METHOD_LABEL).map(([k, v]) => `<option value="${k}" ${(pay?.method || "cash") === k ? "selected" : ""}>${v}</option>`).join("")}</select>
       </div>
+      <div class="field"><label>Tip for the whole stop</label><input type="number" step="0.01" min="0" id="groupPayTip" value="0"></div>
       <div class="checkrow"><input type="checkbox" id="groupPayPaid" checked> <label for="groupPayPaid" style="margin:0;font-weight:600;font-size:13.5px;">Marked paid</label></div>
       <button class="btn btn-primary" id="groupCheckoutSaveBtn" style="width:100%;margin-top:12px;">Check out all ${allAppts.length} dogs</button>
     `);
@@ -1685,10 +1955,14 @@ function openAppointmentDetail(apptId) {
       const method = $("#groupPayMethod").value;
       const paid = $("#groupPayPaid").checked;
       const paidAt = paid ? new Date().toISOString() : null;
+      // One tip covers the whole stop, so it's recorded once (on the first
+      // dog) rather than split or duplicated across every dog's invoice.
+      const groupTip = parseFloat($("#groupPayTip").value) || 0;
       for (const a of allAppts) {
         const amount = apptTotal(a.id);
         const existingPay = paymentForAppt(a.id);
-        const payload = { appointment_id: a.id, amount, method, paid, paid_at: paidAt };
+        const tip = a.id === allAppts[0].id ? groupTip : 0;
+        const payload = { appointment_id: a.id, amount, tip, method, paid, paid_at: paidAt };
         let error;
         if (existingPay) ({ error } = await sb.from("payments").update(payload).eq("id", existingPay.id));
         else ({ error } = await sb.from("payments").insert(payload));
@@ -1700,6 +1974,139 @@ function openAppointmentDetail(apptId) {
       toast(`Checked out ${allAppts.length} dogs — ${fmtMoney(grandTotal)} total`);
       openAppointmentDetail(appt.id);
     });
+  });
+}
+
+/* ---------- EXTEND A RECURRING SERIES ----------
+   Series are booked to a fixed end date rather than running forever, so they
+   need topping up. This continues the existing cadence from the last booked
+   visit — for every dog in the household at once — and carries each dog's own
+   services forward so the new visits aren't priced at zero. */
+function openExtendSeries(seriesIds) {
+  const ids = (seriesIds || []).filter(Boolean);
+  if (!ids.length) { toast("This isn't a repeating appointment"); return; }
+
+  const seriesRows = DB.appointmentSeries.filter(s => ids.includes(s.id));
+  const appts = DB.appointments.filter(a => ids.includes(a.series_id));
+  if (!appts.length) { toast("Nothing to extend"); return; }
+
+  // Anchor on the household's last booked visit so every dog stays in step,
+  // even if one of them had an appointment deleted along the way.
+  const lastAt = new Date(Math.max(...appts.map(a => new Date(a.scheduled_at))));
+  // Fall back to the gap between the last two visits if the series row is
+  // missing its interval for any reason.
+  let weeks = Math.max(1, Number(seriesRows[0]?.interval_weeks) || 0);
+  if (!weeks) {
+    const sorted = appts.map(a => new Date(a.scheduled_at)).sort((a, b) => a - b);
+    const gapDays = sorted.length > 1 ? Math.round((sorted.at(-1) - sorted.at(-2)) / 86400000) : 42;
+    weeks = Math.max(1, Math.round(gapDays / 7));
+  }
+  const dogNames = [...new Set(ids.map(id => {
+    const s = seriesRows.find(r => r.id === id);
+    const petId = s?.pet_id || appts.find(a => a.series_id === id)?.pet_id;
+    return getPet(petId)?.name;
+  }).filter(Boolean))];
+
+  const presets = [3, 6, 12];
+  const defaultUntil = toDateOnlyLocal(addDays(lastAt, 182));
+
+  openSheet("Extend Recurring Series", `
+    <p class="muted small" style="margin-bottom:12px;">
+      ${esc(dogNames.join(", ") || "This pet")} — every ${weeks === 1 ? "week" : `${weeks} weeks`}.
+      Last booked visit is <strong>${fmtDateLong(lastAt)}</strong>. New visits continue from there.
+    </p>
+    <div class="chip-select" style="margin-bottom:12px;">
+      ${presets.map(m => `<button type="button" class="chip" data-extend-months="${m}">+${m} months</button>`).join("")}
+    </div>
+    <div class="field"><label>Book through</label><input type="date" id="exUntil" value="${defaultUntil}"></div>
+    <div id="exPreview" class="tiny" style="margin:-4px 0 12px 2px;color:var(--teal-700);font-weight:600;"></div>
+    <button class="btn btn-primary" id="exSaveBtn" style="width:100%;">Add these appointments</button>
+  `);
+
+  function plannedDates() {
+    const until = parseDateOnly($("#exUntil").value);
+    if (!until) return [];
+    const untilEnd = new Date(until); untilEnd.setHours(23, 59, 59, 999);
+    const out = [];
+    for (let i = 1; i <= REPEAT_MAX; i++) {
+      const d = addWeeks(lastAt, i * weeks);
+      if (d > untilEnd) break;
+      out.push(d);
+    }
+    return out;
+  }
+  function updatePreview() {
+    const dates = plannedDates();
+    const el = $("#exPreview");
+    const btn = $("#exSaveBtn");
+    if (!dates.length) {
+      el.textContent = `That date is before the next visit would fall (${fmtDate(addWeeks(lastAt, weeks))}) — nothing to add.`;
+      btn.disabled = true; btn.style.opacity = ".5";
+      return;
+    }
+    btn.disabled = false; btn.style.opacity = "";
+    const total = dates.length * ids.length;
+    const capped = dates.length >= REPEAT_MAX;
+    const last = dates[dates.length - 1];
+    const lastLabel = last.getFullYear() === new Date().getFullYear()
+      ? fmtDate(last) : `${fmtDate(last)}, ${last.getFullYear()}`;
+    el.textContent = (ids.length > 1
+      ? `${dates.length} more visits × ${ids.length} dogs = ${total} appointments`
+      : `${dates.length} more appointments`)
+      + ` · through ${lastLabel}`
+      + (capped ? ` (capped at ${REPEAT_MAX} visits)` : "");
+  }
+  updatePreview();
+
+  document.querySelectorAll("[data-extend-months]").forEach(b => b.addEventListener("click", () => {
+    const months = parseInt(b.dataset.extendMonths, 10);
+    const d = new Date(lastAt); d.setMonth(d.getMonth() + months);
+    $("#exUntil").value = toDateOnlyLocal(d);
+    document.querySelectorAll("[data-extend-months]").forEach(x => x.classList.toggle("selected", x === b));
+    updatePreview();
+  }));
+  $("#exUntil").addEventListener("input", () => {
+    document.querySelectorAll("[data-extend-months]").forEach(x => x.classList.remove("selected"));
+    updatePreview();
+  });
+
+  $("#exSaveBtn").addEventListener("click", async () => {
+    const dates = plannedDates();
+    if (!dates.length) { toast("Pick a later date"); return; }
+    const btn = $("#exSaveBtn");
+    btn.disabled = true; btn.textContent = "Adding…";
+
+    const multiDog = ids.length > 1;
+    const groupIds = dates.map(() => (multiDog ? uid() : null));
+
+    for (const seriesId of ids) {
+      const mine = DB.appointments.filter(a => a.series_id === seriesId)
+        .sort((a, b) => new Date(b.scheduled_at) - new Date(a.scheduled_at));
+      const template = mine[0];
+      if (!template) continue;
+      const rows = dates.map((d, i) => ({
+        client_id: template.client_id, pet_id: template.pet_id,
+        series_id: seriesId, visit_group_id: groupIds[i],
+        scheduled_at: d.toISOString(), duration_minutes: template.duration_minutes,
+        status: "scheduled", notes: template.notes,
+      }));
+      const { data: inserted, error } = await sb.from("appointments").insert(rows).select();
+      if (error) {
+        console.error(error); toast("Couldn't add appointments");
+        btn.disabled = false; btn.textContent = "Add these appointments";
+        return;
+      }
+      // Carry the dog's own service list forward from its most recent visit.
+      const lines = servicesForAppt(template.id).map(l => ({
+        service_id: l.service_id, service_name: l.service_name, price: l.price,
+      }));
+      if (lines.length && inserted?.length) {
+        await sb.from("appointment_services")
+          .insert(inserted.flatMap(a => lines.map(l => ({ ...l, appointment_id: a.id }))));
+      }
+    }
+    await loadAll(); closeSheet(); render();
+    toast(`${dates.length * ids.length} appointments added`);
   });
 }
 
@@ -1745,6 +2152,10 @@ const REPORT_GROUPS = [
   ] },
   { key: "skin_condition", title: "Skin", icon: "❤️", options: [
     { v: "clear", l: "Clear" }, { v: "redness", l: "Redness" }, { v: "irritation", l: "Irritation" }, { v: "lumps_bumps", l: "Lumps/Bumps" },
+  ] },
+  { key: "flea_tick", title: "Flea & Tick", icon: "🐛", options: [
+    { v: "none", l: "None Found" }, { v: "fleas", l: "Fleas Found" },
+    { v: "ticks", l: "Ticks Found" }, { v: "fleas_and_ticks", l: "Fleas & Ticks Found" },
   ] },
   { key: "ear_condition", title: "Ears", icon: "👂", options: [
     { v: "clean", l: "Clean" }, { v: "mild_wax", l: "Mild Wax" }, { v: "irritation_infection", l: "Signs of Irritation/Infection" },
