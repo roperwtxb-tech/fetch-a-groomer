@@ -278,7 +278,7 @@ const sb = createClient(CFG.url, CFG.key);
 const BUCKET = "visit-photos";
 // Shown at the bottom of the dashboard so it's possible to confirm at a glance
 // which build is actually running after an upload. Bump this on every release.
-const APP_VERSION = "2026.08.27";
+const APP_VERSION = "2026.08.28";
 
 /* ---------- STATE ---------- */
 const DB = {
@@ -304,6 +304,13 @@ function uid() { return crypto.randomUUID(); }
 function startOfDay(d) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
 function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
 function addWeeks(d, n) { return addDays(d, n * 7); }
+// Weeks run Monday–Sunday. Grooming done Saturday but paid on Sunday then
+// lands in the same week's totals as the work itself, instead of being split
+// across two weeks by a Sunday boundary.
+function startOfWeek(d) {
+  const x = startOfDay(d);
+  return addDays(x, -((x.getDay() + 6) % 7));   // Mon=0 … Sun=6
+}
 function sameDay(a, b) { return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate(); }
 function fmtDate(d) { d = new Date(d); return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }); }
 function fmtDateShort(d) { d = new Date(d); return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }); }
@@ -740,7 +747,7 @@ function repeatClients() {
 
 function renderDashboard() {
   const now = new Date();
-  const startWeek = addDays(startOfDay(now), -now.getDay());
+  const startWeek = startOfWeek(now);
   const startMonth = new Date(now.getFullYear(), now.getMonth(), 1);
   const endMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
   const nextWeek = addDays(startOfDay(now), 7);
@@ -978,7 +985,7 @@ function startShiftTicker() {
 function openTimeCard() {
   const now = new Date();
   const entries = DB.timeEntries.slice().sort((a, b) => new Date(b.clock_in) - new Date(a.clock_in));
-  const startWeek = addDays(startOfDay(now), -now.getDay());
+  const startWeek = startOfWeek(now);
   const startMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
   const rows = entries.slice(0, 60).map(t => {
@@ -1390,7 +1397,7 @@ function renderCalendarView() {
 }
 function calHeaderLabel() {
   if (UI.calMode === "month") return monthLabel(UI.calDate);
-  if (UI.calMode === "week") { const s = addDays(startOfDay(UI.calDate), -UI.calDate.getDay()); return `${fmtDateShort(s)} – ${fmtDateShort(addDays(s, 6))}`; }
+  if (UI.calMode === "week") { const s = startOfWeek(UI.calDate); return `${fmtDateShort(s)} – ${fmtDateShort(addDays(s, 6))}`; }
   return fmtDateLong(UI.calDate);
 }
 function forecastBox(label, total, sub, right) {
@@ -1417,10 +1424,10 @@ function dayForecastBox(date) {
 function renderMonthGrid() {
   const y = UI.calDate.getFullYear(), m = UI.calDate.getMonth();
   const first = new Date(y, m, 1);
-  const gridStart = addDays(first, -first.getDay());
+  const gridStart = startOfWeek(first);
   const today = startOfDay(new Date());
   const days = Array.from({ length: 42 }, (_, i) => addDays(gridStart, i));
-  const dow = ["S", "M", "T", "W", "T", "F", "S"];
+  const dow = ["M", "T", "W", "T", "F", "S", "S"];
   return `
     <div class="cal-grid">
       ${dow.map(d => `<div class="cal-dow">${d}</div>`).join("")}
@@ -1442,7 +1449,7 @@ function renderMonthGrid() {
   `;
 }
 function renderWeekAgenda() {
-  const start = addDays(startOfDay(UI.calDate), -UI.calDate.getDay());
+  const start = startOfWeek(UI.calDate);
   const days = Array.from({ length: 7 }, (_, i) => addDays(start, i));
   const weekTotal = projectedRevenueBetween(start, addDays(start, 7));
   const weekDogs = bookableAppts(DB.appointments).filter(a => {
