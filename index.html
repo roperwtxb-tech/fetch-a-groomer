@@ -278,7 +278,7 @@ const sb = createClient(CFG.url, CFG.key);
 const BUCKET = "visit-photos";
 // Shown at the bottom of the dashboard so it's possible to confirm at a glance
 // which build is actually running after an upload. Bump this on every release.
-const APP_VERSION = "2026.09.08";
+const APP_VERSION = "2026.09.08b";
 
 /* ---------- STATE ---------- */
 const DB = {
@@ -479,7 +479,12 @@ function petsForClient(id) { return DB.pets.filter(p => p.client_id === id); }
 function apptsForPet(id) { return DB.appointments.filter(a => a.pet_id === id).sort((a, b) => new Date(b.scheduled_at) - new Date(a.scheduled_at)); }
 function apptsForClient(id) { return DB.appointments.filter(a => a.client_id === id).sort((a, b) => new Date(b.scheduled_at) - new Date(a.scheduled_at)); }
 function servicesForAppt(id) { return DB.appointmentServices.filter(s => s.appointment_id === id); }
-function paymentForAppt(id) { return DB.payments.find(p => p.appointment_id === id); }
+function paymentForAppt(id) {
+  // Newest wins, so this agrees with what the revenue totals count.
+  return DB.payments
+    .filter(p => p.appointment_id === id)
+    .sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))[0];
+}
 function reportForAppt(id) { return DB.visitReports.find(r => r.appointment_id === id); }
 function photosForReport(id) { return DB.visitReportPhotos.filter(p => p.visit_report_id === id); }
 function apptTotal(id) { return servicesForAppt(id).reduce((s, x) => s + Number(x.price || 0), 0); }
@@ -548,22 +553,34 @@ function render() {
    ===================================================================== */
 const PAYMENT_METHOD_LABEL = { cash: "Cash", check: "Check", card: "Card", venmo: "Venmo", cashapp: "Cash App", zelle: "Zelle", other: "Other" };
 
+// An appointment has exactly ONE payment — paymentForAppt() has always assumed
+// that. The revenue totals used to sum the raw rows instead, so a single stray
+// duplicate silently inflated the day's take. Collapse to one row per
+// appointment (keeping the newest) everywhere money gets added up, so the
+// totals and the appointment screen can never disagree.
+function canonicalPayments() {
+  const byAppt = new Map();
+  for (const p of DB.payments) {
+    const prev = byAppt.get(p.appointment_id);
+    if (!prev || new Date(p.created_at || 0) >= new Date(prev.created_at || 0)) byAppt.set(p.appointment_id, p);
+  }
+  return [...byAppt.values()];
+}
+function paidInWindow(from, to) {
+  return canonicalPayments().filter(p => p.paid && p.paid_at && new Date(p.paid_at) >= from && new Date(p.paid_at) < to);
+}
 function revenueBetween(from, to) {
-  const paidAppts = DB.payments.filter(p => p.paid && p.paid_at && new Date(p.paid_at) >= from && new Date(p.paid_at) < to);
-  return paidAppts.reduce((s, p) => s + Number(p.amount || 0), 0);
+  return paidInWindow(from, to).reduce((s, p) => s + Number(p.amount || 0), 0);
 }
 function revenueByMethodBetween(from, to) {
   const map = {};
-  DB.payments.filter(p => p.paid && p.paid_at && new Date(p.paid_at) >= from && new Date(p.paid_at) < to)
-    .forEach(p => { map[p.method] = (map[p.method] || 0) + Number(p.amount || 0); });
+  paidInWindow(from, to).forEach(p => { map[p.method] = (map[p.method] || 0) + Number(p.amount || 0); });
   return map;
 }
 // Tips are tracked alongside the grooming charge but kept separate everywhere,
 // so "what did I make grooming" and "what did I make in tips" stay answerable.
 function tipsBetween(from, to) {
-  return DB.payments
-    .filter(p => p.paid && p.paid_at && new Date(p.paid_at) >= from && new Date(p.paid_at) < to)
-    .reduce((s, p) => s + Number(p.tip || 0), 0);
+  return paidInWindow(from, to).reduce((s, p) => s + Number(p.tip || 0), 0);
 }
 
 /* ---------- TIME CARD ---------- */
@@ -1894,16 +1911,33 @@ function openAppointmentDetail(apptId) {
     await loadAll(); closeSheet(); render(); openAppointmentDetail(appt.id);
   }));
 
-  $("#paySaveBtn").addEventListener("click", async () => {
+  const paySaveBtn = $("#paySaveBtn");
+  paySaveBtn.addEventListener("click", async () => {
+    // Guard against a second tap while the first save is still in flight —
+    // that's how one visit ended up with three payment rows and a day's total
+    // that counted the same money three times.
+    if (paySaveBtn.disabled) return;
+    paySaveBtn.disabled = true;
+    paySaveBtn.textContent = "Saving…";
+    const undo = () => { paySaveBtn.disabled = false; paySaveBtn.textContent = "Save payment"; };
+
     const amount = parseFloat($("#payAmount").value) || 0;
     const method = $("#payMethod").value;
     const paid = $("#payPaid").checked;
     const tip = parseFloat($("#payTip").value) || 0;
     const payload = { appointment_id: appt.id, amount, tip, method, paid, paid_at: paid ? new Date().toISOString() : null };
+
+    // Ask the database what exists RIGHT NOW instead of trusting the row that
+    // was read when this sheet was drawn. A stale "no payment yet" was what
+    // turned every repeat tap into a fresh insert.
+    const { data: found, error: findErr } = await sb.from("payments").select("*").eq("appointment_id", appt.id);
+    if (findErr) { console.error(findErr); toast("Save failed"); undo(); return; }
+    const current = (found || []).sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))[0];
+
     let error;
-    if (pay) { ({ error } = await sb.from("payments").update(payload).eq("id", pay.id)); }
-    else { ({ error } = await sb.from("payments").insert(payload)); }
-    if (error) { console.error(error); toast("Save failed"); return; }
+    if (current) ({ error } = await sb.from("payments").update(payload).eq("id", current.id));
+    else ({ error } = await sb.from("payments").insert(payload));
+    if (error) { console.error(error); toast("Save failed"); undo(); return; }
     await loadAll(); render(); toast("Payment saved");
     closeSheet(); openAppointmentDetail(appt.id);
   });
@@ -1977,7 +2011,14 @@ function openAppointmentDetail(apptId) {
       <div class="checkrow"><input type="checkbox" id="groupPayPaid" checked> <label for="groupPayPaid" style="margin:0;font-weight:600;font-size:13.5px;">Marked paid</label></div>
       <button class="btn btn-primary" id="groupCheckoutSaveBtn" style="width:100%;margin-top:12px;">Check out all ${allAppts.length} dogs</button>
     `);
-    $("#groupCheckoutSaveBtn").addEventListener("click", async () => {
+    const groupSaveBtn = $("#groupCheckoutSaveBtn");
+    groupSaveBtn.addEventListener("click", async () => {
+      if (groupSaveBtn.disabled) return;          // no double-tap, no double charge
+      groupSaveBtn.disabled = true;
+      const label = groupSaveBtn.textContent;
+      groupSaveBtn.textContent = "Checking out…";
+      const undo = () => { groupSaveBtn.disabled = false; groupSaveBtn.textContent = label; };
+
       const method = $("#groupPayMethod").value;
       const paid = $("#groupPayPaid").checked;
       const paidAt = paid ? new Date().toISOString() : null;
@@ -1986,15 +2027,18 @@ function openAppointmentDetail(apptId) {
       const groupTip = parseFloat($("#groupPayTip").value) || 0;
       for (const a of allAppts) {
         const amount = apptTotal(a.id);
-        const existingPay = paymentForAppt(a.id);
         const tip = a.id === allAppts[0].id ? groupTip : 0;
         const payload = { appointment_id: a.id, amount, tip, method, paid, paid_at: paidAt };
+        // Same as the single-dog path: check the database, not our snapshot.
+        const { data: found, error: findErr } = await sb.from("payments").select("*").eq("appointment_id", a.id);
+        if (findErr) { console.error(findErr); toast("Save failed"); undo(); return; }
+        const existingPay = (found || []).sort((x, y) => new Date(y.created_at || 0) - new Date(x.created_at || 0))[0];
         let error;
         if (existingPay) ({ error } = await sb.from("payments").update(payload).eq("id", existingPay.id));
         else ({ error } = await sb.from("payments").insert(payload));
-        if (error) { console.error(error); toast("Save failed"); return; }
+        if (error) { console.error(error); toast("Save failed"); undo(); return; }
         ({ error } = await sb.from("appointments").update({ status: "completed", updated_at: new Date().toISOString() }).eq("id", a.id));
-        if (error) { console.error(error); toast("Save failed"); return; }
+        if (error) { console.error(error); toast("Save failed"); undo(); return; }
       }
       await loadAll(); closeSheet(); render();
       toast(`Checked out ${allAppts.length} dogs — ${fmtMoney(grandTotal)} total`);
