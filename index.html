@@ -278,7 +278,7 @@ const sb = createClient(CFG.url, CFG.key);
 const BUCKET = "visit-photos";
 // Shown at the bottom of the dashboard so it's possible to confirm at a glance
 // which build is actually running after an upload. Bump this on every release.
-const APP_VERSION = "2026.08.28";
+const APP_VERSION = "2026.09.08";
 
 /* ---------- STATE ---------- */
 const DB = {
@@ -425,18 +425,37 @@ function confirmDialog(msg, onYes) {
 }
 
 /* ---------- DATA LOADING ---------- */
+// Supabase caps a plain select at 1000 rows and returns the first page WITHOUT
+// any error — so a growing table silently stops loading past that point and
+// the app quietly acts as if the extra rows don't exist. Page through instead.
+const PAGE_SIZE = 1000;
+async function fetchAllRows(table, orderCol) {
+  let rows = [], from = 0;
+  for (;;) {
+    let q = sb.from(table).select("*");
+    if (orderCol) q = q.order(orderCol);
+    const { data, error } = await q.range(from, from + PAGE_SIZE - 1);
+    if (error) return { data: rows, error };
+    rows = rows.concat(data || []);
+    if (!data || data.length < PAGE_SIZE) break;
+    from += PAGE_SIZE;
+    if (from > 200000) break;   // hard stop; nothing here should ever get close
+  }
+  return { data: rows, error: null };
+}
+
 async function loadAll() {
   const [clients, pets, services, appointments, appointmentSeries, appointmentServices, payments, visitReports, visitReportPhotos, timeEntries] = await Promise.all([
-    sb.from("clients").select("*").order("name"),
-    sb.from("pets").select("*").order("name"),
-    sb.from("services").select("*").order("sort_order"),
-    sb.from("appointments").select("*").order("scheduled_at"),
-    sb.from("appointment_series").select("*"),
-    sb.from("appointment_services").select("*"),
-    sb.from("payments").select("*"),
-    sb.from("visit_reports").select("*"),
-    sb.from("visit_report_photos").select("*"),
-    sb.from("time_entries").select("*").order("clock_in"),
+    fetchAllRows("clients", "name"),
+    fetchAllRows("pets", "name"),
+    fetchAllRows("services", "sort_order"),
+    fetchAllRows("appointments", "scheduled_at"),
+    fetchAllRows("appointment_series"),
+    fetchAllRows("appointment_services"),
+    fetchAllRows("payments"),
+    fetchAllRows("visit_reports"),
+    fetchAllRows("visit_report_photos"),
+    fetchAllRows("time_entries", "clock_in"),
   ]);
   for (const [name, res] of Object.entries({ clients, pets, services, appointments, appointmentSeries, appointmentServices, payments, visitReports, visitReportPhotos, timeEntries })) {
     if (res.error) { console.error(name, res.error); toast("Couldn't load " + name); }
