@@ -278,7 +278,7 @@ const sb = createClient(CFG.url, CFG.key);
 const BUCKET = "visit-photos";
 // Shown at the bottom of the dashboard so it's possible to confirm at a glance
 // which build is actually running after an upload. Bump this on every release.
-const APP_VERSION = "2026.09.08b";
+const APP_VERSION = "2026.09.09";
 
 /* ---------- STATE ---------- */
 const DB = {
@@ -294,6 +294,7 @@ const UI = {
   clientSearch: "",
   apptFilter: { status: "all", from: "", to: "", paid: "all" },
   searchQuery: "",
+  earnBasis: "paid",          // paid = when the money landed | groomed = when the work was done
 };
 
 /* ---------- SMALL HELPERS ---------- */
@@ -583,6 +584,30 @@ function tipsBetween(from, to) {
   return paidInWindow(from, to).reduce((s, p) => s + Number(p.tip || 0), 0);
 }
 
+/* ---------- EARNED (BY SERVICE DATE) ----------
+   The functions above answer "what money arrived this week", which follows the
+   payment date and so matches the bank. These answer "what did I earn for the
+   work I did this week", which follows the day of the groom whether or not the
+   client has paid yet. A visit groomed on the 28th and paid on the 8th belongs
+   to a different week in each view — both are true, they answer different
+   questions. Outstanding Balance is the bridge between them. */
+function completedInWindow(from, to) {
+  return DB.appointments.filter(a => {
+    if (a.status !== "completed") return false;
+    const d = new Date(a.scheduled_at);
+    return d >= from && d < to;
+  });
+}
+function earnedRevenueBetween(from, to) {
+  return completedInWindow(from, to).reduce((s, a) => s + apptTotal(a.id), 0);
+}
+function earnedTipsBetween(from, to) {
+  return completedInWindow(from, to).reduce((s, a) => {
+    const pay = paymentForAppt(a.id);
+    return s + (pay && pay.paid ? Number(pay.tip || 0) : 0);
+  }, 0);
+}
+
 /* ---------- TIME CARD ---------- */
 function openShift() { return DB.timeEntries.find(t => !t.clock_out) || null; }
 function entryMs(t, now) {
@@ -808,11 +833,23 @@ function renderDashboard() {
 
   const shift = openShift();
   const weekEnd = addDays(startWeek, 7);
+
+  // "paid" counts money on the day it landed; "groomed" counts it on the day
+  // the work was done. Her choice — the labels below say which is showing.
+  const basis = UI.earnBasis || "paid";
+  const groomRev = basis === "groomed" ? earnedRevenueBetween : revenueBetween;
+  const tipRev = basis === "groomed" ? earnedTipsBetween : tipsBetween;
+
   const earn = {
-    weekGroom: revenueBetween(startWeek, weekEnd), weekTips: tipsBetween(startWeek, weekEnd),
-    monthGroom: revenueBetween(startMonth, endMonth), monthTips: tipsBetween(startMonth, endMonth),
+    weekGroom: groomRev(startWeek, weekEnd), weekTips: tipRev(startWeek, weekEnd),
+    monthGroom: groomRev(startMonth, endMonth), monthTips: tipRev(startMonth, endMonth),
     weekHours: hoursBetween(startWeek, weekEnd, now), monthHours: hoursBetween(startMonth, endMonth, now),
   };
+  // Per hour ALWAYS pairs the money with the hours that actually produced it,
+  // so it uses the groom date whichever way the toggle is set. Dividing money
+  // that arrived this week by hours worked this week compares two different
+  // sets of days and gives a rate that describes neither.
+  const rateMoney = (f, t) => earnedRevenueBetween(f, t) + earnedTipsBetween(f, t);
   const perHour = (money, hours) => (hours > 0.0001 ? fmtMoney(money / hours) + "/hr" : "—");
 
   return `
@@ -840,6 +877,13 @@ function renderDashboard() {
 
     <div class="section-title">Earnings</div>
     <div class="card">
+      <div class="segmented" style="margin-bottom:6px;">
+        <button data-earn-basis="paid" class="${basis === "paid" ? "active" : ""}">When paid</button>
+        <button data-earn-basis="groomed" class="${basis === "groomed" ? "active" : ""}">When groomed</button>
+      </div>
+      <p class="tiny muted" style="margin:0 0 12px;">${basis === "paid"
+        ? "Counting money on the day it landed — matches your bank."
+        : "Counting work on the day you did it, whether it's been paid yet or not."}</p>
       <div class="row between tiny bold muted" style="text-transform:uppercase;letter-spacing:.03em;padding-bottom:6px;border-bottom:1px solid var(--border);">
         <span style="flex:1;"></span><span style="width:88px;text-align:right;">This week</span><span style="width:88px;text-align:right;">This month</span>
       </div>
@@ -865,10 +909,10 @@ function renderDashboard() {
       </div>
       <div class="row between small" style="padding:7px 0;border-top:1px solid var(--border);">
         <span style="flex:1;" class="muted">Per hour</span>
-        <span style="width:88px;text-align:right;font-weight:700;">${perHour(earn.weekGroom + earn.weekTips, earn.weekHours)}</span>
-        <span style="width:88px;text-align:right;font-weight:700;">${perHour(earn.monthGroom + earn.monthTips, earn.monthHours)}</span>
+        <span style="width:88px;text-align:right;font-weight:700;">${perHour(rateMoney(startWeek, weekEnd), earn.weekHours)}</span>
+        <span style="width:88px;text-align:right;font-weight:700;">${perHour(rateMoney(startMonth, endMonth), earn.monthHours)}</span>
       </div>
-      <p class="tiny muted" style="margin:8px 0 0;">Per hour includes tips. Hours come from the time card above.</p>
+      <p class="tiny muted" style="margin:8px 0 0;">Per hour always counts work on the day you did it, so the money and the hours cover the same days. Includes tips. Hours come from the time card above.</p>
     </div>
 
     <div class="stat-grid" style="margin-bottom:6px;">
@@ -958,6 +1002,7 @@ function renderDashboard() {
 
 function bindDashboardEvents() {
   document.querySelectorAll("[data-dash-period]").forEach(b => b.addEventListener("click", () => { UI.dashPeriod = b.dataset.dashPeriod; render(); }));
+  document.querySelectorAll("[data-earn-basis]").forEach(b => b.addEventListener("click", () => { UI.earnBasis = b.dataset.earnBasis; render(); }));
   document.querySelectorAll("[data-open-appt]").forEach(b => b.addEventListener("click", () => openAppointmentDetail(b.dataset.openAppt)));
 
   const expClients = $("#exportClientsBtn");
