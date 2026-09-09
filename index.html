@@ -278,7 +278,7 @@ const sb = createClient(CFG.url, CFG.key);
 const BUCKET = "visit-photos";
 // Shown at the bottom of the dashboard so it's possible to confirm at a glance
 // which build is actually running after an upload. Bump this on every release.
-const APP_VERSION = "2026.09.09";
+const APP_VERSION = "2026.09.09b";
 
 /* ---------- STATE ---------- */
 const DB = {
@@ -1924,12 +1924,18 @@ function openAppointmentDetail(apptId) {
     <div class="section-title">Payment</div>
     <div class="card">
       <div class="field-row">
-        <div class="field"><label>Amount charged</label><input type="number" step="0.01" min="0" id="payAmount" value="${pay ? pay.amount : total}"></div>
+        <div class="field"><label>Amount received</label><input type="number" step="0.01" min="0" id="payAmount" value="${pay ? pay.amount : total}"></div>
         <div class="field"><label>Method</label>
           <select id="payMethod">${Object.entries(PAYMENT_METHOD_LABEL).map(([k, v]) => `<option value="${k}" ${pay?.method === k ? "selected" : ""}>${v}</option>`).join("")}</select>
         </div>
       </div>
-      <div class="field"><label>Tip</label><input type="number" step="0.01" min="0" id="payTip" value="${pay ? (pay.tip || 0) : 0}"></div>
+      <div id="payBalance" class="tiny" style="margin:-6px 0 12px 2px;font-weight:600;"></div>
+      <div class="field-row">
+        <div class="field"><label>Tip</label><input type="number" step="0.01" min="0" id="payTip" value="${pay ? (pay.tip || 0) : 0}"></div>
+        <div class="field"><label>Date received</label>
+          <input type="date" id="payDate" value="${toDateOnlyLocal(pay?.paid_at || appt.scheduled_at)}">
+        </div>
+      </div>
       <div class="checkrow"><input type="checkbox" id="payPaid" ${pay?.paid ? "checked" : ""}> <label for="payPaid" style="margin:0;font-weight:600;font-size:13.5px;">Marked paid</label></div>
       <button class="btn btn-primary btn-sm" id="paySaveBtn" style="width:100%;">Save payment</button>
     </div>
@@ -1956,6 +1962,28 @@ function openAppointmentDetail(apptId) {
     await loadAll(); closeSheet(); render(); openAppointmentDetail(appt.id);
   }));
 
+  // Show what's still owed as she types, so a part payment is obvious before
+  // she saves rather than after. Prefilling the full total is right most of the
+  // time, but it's also how a $100 payment got recorded as $130.
+  function updatePayBalance() {
+    const el = $("#payBalance");
+    if (!el) return;
+    const received = parseFloat($("#payAmount").value) || 0;
+    const due = total - received;
+    if (Math.abs(due) < 0.005) {
+      el.textContent = `Paid in full — ${fmtMoney(total)}`;
+      el.style.color = "var(--teal-600)";
+    } else if (due > 0) {
+      el.textContent = `${fmtMoney(due)} still owed of ${fmtMoney(total)}`;
+      el.style.color = "var(--orange-600)";
+    } else {
+      el.textContent = `${fmtMoney(-due)} more than the ${fmtMoney(total)} owed`;
+      el.style.color = "var(--ink-500)";
+    }
+  }
+  updatePayBalance();
+  $("#payAmount").addEventListener("input", updatePayBalance);
+
   const paySaveBtn = $("#paySaveBtn");
   paySaveBtn.addEventListener("click", async () => {
     // Guard against a second tap while the first save is still in flight —
@@ -1970,7 +1998,16 @@ function openAppointmentDetail(apptId) {
     const method = $("#payMethod").value;
     const paid = $("#payPaid").checked;
     const tip = parseFloat($("#payTip").value) || 0;
-    const payload = { appointment_id: appt.id, amount, tip, method, paid, paid_at: paid ? new Date().toISOString() : null };
+    // Money often arrives days after the groom, so the date is hers to set
+    // rather than always stamped "now". Anchored at midday local so the stored
+    // timestamp can't slide onto the neighbouring day in either direction.
+    const chosen = parseDateOnly($("#payDate").value);
+    let paidAt = null;
+    if (paid) {
+      if (chosen) { chosen.setHours(12, 0, 0, 0); paidAt = chosen.toISOString(); }
+      else paidAt = new Date().toISOString();
+    }
+    const payload = { appointment_id: appt.id, amount, tip, method, paid, paid_at: paidAt };
 
     // Ask the database what exists RIGHT NOW instead of trusting the row that
     // was read when this sheet was drawn. A stale "no payment yet" was what
