@@ -278,7 +278,7 @@ const sb = createClient(CFG.url, CFG.key);
 const BUCKET = "visit-photos";
 // Shown at the bottom of the dashboard so it's possible to confirm at a glance
 // which build is actually running after an upload. Bump this on every release.
-const APP_VERSION = "2026.09.11a";
+const APP_VERSION = "2026.09.11b";
 
 /* ---------- STATE ---------- */
 const DB = {
@@ -638,6 +638,39 @@ function fmtHours(h) {
   if (!hh && !mm) return "0m";
   return hh ? `${hh}h ${mm}m` : `${mm}m`;
 }
+/* A rate is only honest over days she actually clocked. The time card started
+   part-way through her history, so a window that reaches back far enough holds
+   real grooming money against almost no hours and produces something like
+   $270/hr. So the rate is built from days that have BOTH finished work and
+   clocked time; a day with work but no time card is reported separately rather
+   than silently inflating the number. Money goals still count every day. */
+function hourlyBasis(from, to, now) {
+  const hoursByDay = new Map();
+  for (const t of DB.timeEntries) {
+    const d = new Date(t.clock_in);
+    if (d < from || d >= to) continue;
+    const k = toDateOnlyLocal(d);
+    hoursByDay.set(k, (hoursByDay.get(k) || 0) + entryMs(t, now) / 3600000);
+  }
+  let money = 0, untracked = 0;
+  const workedDays = new Set();
+  for (const a of completedInWindow(from, to)) {
+    const k = toDateOnlyLocal(new Date(a.scheduled_at));
+    workedDays.add(k);
+    if (hoursByDay.has(k)) money += apptTotal(a.id);
+    else untracked += apptTotal(a.id);
+  }
+  // Only hours on days she also groomed belong in the rate — a shift logged
+  // with no finished visit on it would drag the rate down for no reason.
+  let hours = 0;
+  for (const [k, h] of hoursByDay) if (workedDays.has(k)) hours += h;
+  const skipped = [...workedDays].filter(k => !hoursByDay.has(k)).length;
+  return {
+    money, hours, untracked, skipped,
+    ratedDays: workedDays.size - skipped,
+    rate: hours > 0.0001 && money > 0 ? money / hours : null,
+  };
+}
 function fmtElapsed(ms) {
   const s = Math.floor(ms / 1000);
   const hh = Math.floor(s / 3600), mm = Math.floor((s % 3600) / 60), ss = s % 60;
@@ -666,7 +699,8 @@ function goalProgress(from, to, weeks, now) {
   const g = goals();
   const appts = completedInWindow(from, to);
   const money = appts.reduce((s, a) => s + apptTotal(a.id), 0);
-  const hours = hoursBetween(from, to, now);
+  const hb = hourlyBasis(from, to, now);
+  const hours = hb.hours;
   const target = g.week * weeks;
   // Day totals drive the $400/day goal. Keyed by local date so a late finish
   // stays on the day she worked it.
@@ -678,9 +712,10 @@ function goalProgress(from, to, weeks, now) {
   const days = [...byDay.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1));
   return {
     g, money, hours, target, days,
+    hb,
     short: Math.max(0, target - money),
     over: Math.max(0, money - target),
-    rate: hours > 0.0001 ? money / hours : null,
+    rate: hb.rate,
     appts: appts.length,
     daysWorked: days.length,
     daysHit: days.filter(([, v]) => v >= g.day).length,
@@ -961,8 +996,10 @@ function renderDashboard() {
   // sets of days and gives a rate that describes neither.
   // Tips are deliberately left out: the rate has to be something she can price
   // against, and a tip isn't promised. Every tip then lands ABOVE the goal.
-  const rateMoney = (f, t) => earnedRevenueBetween(f, t);
-  const perHour = (money, hours) => (hours > 0.0001 ? fmtMoney(money / hours) + "/hr" : "—");
+  const weekRate = hourlyBasis(startWeek, weekEnd, now);
+  const monthRate = hourlyBasis(startMonth, endMonth, now);
+  const perHour = (hb) => (hb.rate === null ? "—" : fmtMoney(hb.rate) + "/hr");
+  const untrackedDays = weekRate.skipped + monthRate.skipped;
 
   return `
     <div class="card" style="${shift ? "background:var(--teal-100);border:1px solid var(--teal-500);" : ""}box-shadow:${shift ? "none" : "var(--shadow)"};">
@@ -1029,10 +1066,10 @@ function renderDashboard() {
       </div>
       <div class="row between small" style="padding:7px 0;border-top:1px solid var(--border);">
         <span style="flex:1;" class="muted">Per hour</span>
-        <span style="width:88px;text-align:right;font-weight:700;">${perHour(rateMoney(startWeek, weekEnd), earn.weekHours)}</span>
-        <span style="width:88px;text-align:right;font-weight:700;">${perHour(rateMoney(startMonth, endMonth), earn.monthHours)}</span>
+        <span style="width:88px;text-align:right;font-weight:700;">${perHour(weekRate)}</span>
+        <span style="width:88px;text-align:right;font-weight:700;">${perHour(monthRate)}</span>
       </div>
-      <p class="tiny muted" style="margin:8px 0 0;">Per hour always counts work on the day you did it, so the money and the hours cover the same days. Grooming only — tips are not counted, so every tip lands on top. Hours come from the time card above.</p>
+      <p class="tiny muted" style="margin:8px 0 0;">Per hour always counts work on the day you did it, so the money and the hours cover the same days. Grooming only — tips are not counted, so every tip lands on top. Hours come from the time card above.${monthRate.skipped ? ` A day you groomed without clocking in can't have a rate, so ${monthRate.skipped === 1 ? "1 day this month is" : monthRate.skipped + " days this month are"} left out of it.` : ""}</p>
     </div>
 
     ${(() => {
@@ -1054,7 +1091,7 @@ function renderDashboard() {
             <span class="tiny" style="display:block;font-weight:700;color:${ok ? "var(--teal-600)" : "var(--orange-600)"};">${note}</span>
           </span>
         </div>`;
-      const rateNote = gp.rate === null ? "no hours logged"
+      const rateNote = gp.rate === null ? "no hours clocked"
         : gp.rate >= g.hour ? `${fmtMoney(gp.rate - g.hour)} over` : `short ${fmtMoney(g.hour - gp.rate)}`;
       return `
     <div class="section-title">Goals</div>
@@ -1069,8 +1106,11 @@ function renderDashboard() {
       </div>
       ${goalRow("Grooming money", `Goal ${fmtMoneyShort(gp.target)} ${span}`, fmtMoney(gp.money),
         gp.short > 0 ? `short ${fmtMoney(gp.short)}` : `${fmtMoney(gp.over)} over`, gp.short <= 0)}
-      ${goalRow("Per hour", `Goal ${fmtMoneyShort(g.hour)}/hr · ${fmtHours(gp.hours)} worked`,
+      ${goalRow("Per hour", gp.rate === null
+          ? "No clocked hours on the days you groomed"
+          : `Goal ${fmtMoneyShort(g.hour)}/hr · ${fmtHours(gp.hours)} clocked`,
         gp.rate === null ? "—" : fmtMoney(gp.rate) + "/hr", rateNote, gp.rate !== null && gp.rate >= g.hour)}
+      ${gp.hb.skipped ? `<p class="tiny" style="margin:2px 0 0;color:var(--orange-600);">${gp.hb.skipped === 1 ? "1 day" : gp.hb.skipped + " days"} in this stretch had grooming but no time card — ${fmtMoney(gp.hb.untracked)} of work is left out of the rate above. The money goal still counts it.</p>` : ""}
       ${goalRow(`${fmtMoneyShort(g.day)} days`, `Days you worked in this stretch`,
         `${gp.daysHit} of ${gp.daysWorked}`,
         gp.daysWorked && gp.daysHit === gp.daysWorked ? "all of them" : `${gp.daysWorked - gp.daysHit} came up short`,
