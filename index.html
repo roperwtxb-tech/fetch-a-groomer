@@ -278,7 +278,7 @@ const sb = createClient(CFG.url, CFG.key);
 const BUCKET = "visit-photos";
 // Shown at the bottom of the dashboard so it's possible to confirm at a glance
 // which build is actually running after an upload. Bump this on every release.
-const APP_VERSION = "2026.09.10a";
+const APP_VERSION = "2026.09.10b";
 
 /* ---------- STATE ---------- */
 const DB = {
@@ -1092,52 +1092,148 @@ function startShiftTicker() {
    Every number in the app leans on an appointment's status being true. This is
    the one place to fix a whole backlog in a few taps instead of opening each
    visit one at a time. */
-function openStaleReview() {
-  const list = staleAppointments();
-  if (!list.length) { toast("Nothing to close out"); return; }
-  const totalValue = list.reduce((s, a) => s + apptTotal(a.id), 0);
+function staleStops() {
+  // Dogs groomed together at one house are one decision, not several — group
+  // them so a three-dog stop is a single card instead of three near-identical
+  // rows she has to tap through.
+  const groups = new Map();
+  for (const a of staleAppointments()) {
+    const key = a.visit_group_id || `solo:${a.id}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(a);
+  }
+  return [...groups.values()]
+    .sort((x, y) => new Date(x[0].scheduled_at) - new Date(y[0].scheduled_at));
+}
 
-  const rows = list.map(a => {
-    const pet = getPet(a.pet_id), client = getClient(a.client_id);
+function openStaleReview() {
+  const stops = staleStops();
+  if (!stops.length) { toast("Nothing to close out"); return; }
+  const visits = stops.reduce((s, g) => s + g.length, 0);
+  const totalValue = stops.reduce((s, g) => s + g.reduce((t, a) => t + apptTotal(a.id), 0), 0);
+
+  const cards = stops.map(group => {
+    const first = group[0];
+    const client = getClient(first.client_id);
+    const names = group.map(a => getPet(a.pet_id)?.name).filter(Boolean).join(", ");
+    const value = group.reduce((s, a) => s + apptTotal(a.id), 0);
+    const ids = group.map(a => a.id).join(",");
     return `<div class="card" style="margin-bottom:8px;">
       <div class="row between" style="align-items:flex-start;gap:10px;">
         <div style="min-width:0;">
-          <div class="bold small">${esc(pet?.name || "Pet")} <span class="muted">— ${esc(client?.name || "")}</span></div>
-          <div class="tiny muted">${fmtDate(a.scheduled_at)} · ${fmtTime(a.scheduled_at)}</div>
+          <div class="bold small">${esc(names || "Pet")} <span class="muted">— ${esc(client?.name || "")}</span></div>
+          <div class="tiny muted">${fmtDate(first.scheduled_at)} · ${fmtTime(first.scheduled_at)}${group.length > 1 ? ` · ${group.length} dogs` : ""}</div>
         </div>
-        <span class="bold small" style="flex-shrink:0;">${fmtMoney(apptTotal(a.id))}</span>
+        <span class="bold small" style="flex-shrink:0;">${fmtMoney(value)}</span>
       </div>
-      <div class="btn-row" style="margin-top:10px;gap:6px;">
-        <button class="btn btn-primary btn-sm" data-stale-set="completed" data-appt="${a.id}">Did it</button>
-        <button class="btn btn-secondary btn-sm" data-stale-set="no_show" data-appt="${a.id}">No-show</button>
-        <button class="btn btn-outline btn-sm" data-stale-set="cancelled" data-appt="${a.id}">Cancelled</button>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:10px;">
+        <button class="btn btn-primary btn-sm" data-stale-set="completed" data-appts="${ids}">Did it</button>
+        <button class="btn btn-secondary btn-sm" data-stale-move data-appts="${ids}">Reschedule</button>
+        <button class="btn btn-outline btn-sm" data-stale-set="no_show" data-appts="${ids}">No-show</button>
+        <button class="btn btn-outline btn-sm" data-stale-set="cancelled" data-appts="${ids}">Cancelled</button>
       </div>
     </div>`;
   }).join("");
 
   openSheet("Close Out Past Visits", `
-    <p class="muted small" style="margin-bottom:14px;">
-      These ${list.length === 1 ? "visit's day has" : "visits' days have"} passed but ${list.length === 1 ? "it was" : "they were"} never closed out,
-      so ${fmtMoney(totalValue)} is sitting in limbo. Say what happened and your
-      numbers sort themselves out.
+    <p class="muted small" style="margin-bottom:10px;">
+      ${stops.length === 1 ? "This stop's day has" : `These ${stops.length} stops' days have`} passed without being closed out,
+      so ${fmtMoney(totalValue)} is sitting in limbo. Say what happened and your numbers sort themselves out.
     </p>
-    <p class="tiny muted" style="margin:-8px 0 14px;">Tapping <strong>Did it</strong> marks the visit completed — you can add the payment afterwards from the appointment itself.</p>
-    ${rows}
+    <p class="tiny muted" style="margin:0 0 14px;">
+      <strong>Did it</strong> marks it completed — add the payment afterwards from the appointment.
+      <strong>Reschedule</strong> moves it to a new date and keeps it on the books.
+      ${visits !== stops.length ? `<br>Dogs groomed together are grouped, so ${visits} visits are ${stops.length} decisions.` : ""}
+    </p>
+    ${cards}
   `);
 
   document.querySelectorAll("[data-stale-set]").forEach(b => b.addEventListener("click", async () => {
     if (b.disabled) return;
     b.disabled = true;
+    const ids = b.dataset.appts.split(",");
     const { error } = await sb.from("appointments")
       .update({ status: b.dataset.staleSet, updated_at: new Date().toISOString() })
-      .eq("id", b.dataset.appt);
+      .in("id", ids);
     if (error) { console.error(error); toast("Update failed"); b.disabled = false; return; }
     await loadAll(); render();
-    const left = staleAppointments().length;
+    const left = staleStops().length;
     closeSheet();
     if (left) openStaleReview();
     else toast("All caught up");
   }));
+
+  document.querySelectorAll("[data-stale-move]").forEach(b => b.addEventListener("click", () => {
+    openStaleReschedule(b.dataset.appts.split(","));
+  }));
+}
+
+/* ---------- RESCHEDULE A MISSED VISIT ---------- */
+function openStaleReschedule(ids) {
+  const group = ids.map(id => DB.appointments.find(a => a.id === id)).filter(Boolean);
+  if (!group.length) { toast("Couldn't find that visit"); return; }
+  const first = group[0];
+  const client = getClient(first.client_id);
+  const names = group.map(a => getPet(a.pet_id)?.name).filter(Boolean).join(", ");
+
+  // Suggest the same weekday and time, rolled forward until it's in the future
+  // — a missed Thursday 9am becomes next Thursday 9am rather than a date she
+  // has to work out herself.
+  const suggested = new Date(first.scheduled_at);
+  const now = new Date();
+  while (suggested <= now) suggested.setDate(suggested.getDate() + 7);
+
+  openSheet("Reschedule Visit", `
+    <p class="muted small" style="margin-bottom:4px;">
+      <strong>${esc(names)}</strong> — ${esc(client?.name || "")}${group.length > 1 ? ` · ${group.length} dogs` : ""}
+    </p>
+    <p class="tiny muted" style="margin:0 0 14px;">Was ${fmtDateLong(first.scheduled_at)} at ${fmtTime(first.scheduled_at)}.</p>
+    <div class="field"><label>New date &amp; time</label><input type="datetime-local" id="stWhen" value="${toDatetimeLocal(suggested)}"></div>
+    <div id="stHint" class="tiny" style="margin:-4px 0 12px 2px;font-weight:600;"></div>
+    <div class="btn-row">
+      <button class="btn btn-primary" id="stSaveBtn">Move ${group.length > 1 ? `all ${group.length} dogs` : "it"}</button>
+      <button class="btn btn-secondary" id="stBackBtn">Back</button>
+    </div>
+  `);
+
+  function updateHint() {
+    const el = $("#stHint"), v = $("#stWhen").value;
+    if (!v) { el.textContent = "Pick a date and time."; el.style.color = "var(--orange-600)"; return; }
+    const d = new Date(v);
+    if (d < startOfDay(new Date())) {
+      el.textContent = "That's still in the past — it'll stay on the close-out list.";
+      el.style.color = "var(--orange-600)";
+    } else {
+      el.textContent = `Moving to ${fmtDate(d)} at ${fmtTime(d)}.`;
+      el.style.color = "var(--teal-600)";
+    }
+  }
+  updateHint();
+  $("#stWhen").addEventListener("input", updateHint);
+
+  $("#stSaveBtn").addEventListener("click", async () => {
+    const btn = $("#stSaveBtn");
+    if (btn.disabled) return;
+    const v = $("#stWhen").value;
+    if (!v) { toast("Pick a date and time"); return; }
+    btn.disabled = true; btn.textContent = "Moving…";
+    // Status stays "scheduled" — this visit is still going to happen.
+    const { error } = await sb.from("appointments")
+      .update({ scheduled_at: new Date(v).toISOString(), updated_at: new Date().toISOString() })
+      .in("id", ids);
+    if (error) {
+      console.error(error); toast("Move failed");
+      btn.disabled = false; btn.textContent = `Move ${group.length > 1 ? `all ${group.length} dogs` : "it"}`;
+      return;
+    }
+    await loadAll(); render();
+    const left = staleStops().length;
+    closeSheet();
+    toast(group.length > 1 ? `${group.length} dogs moved to ${fmtDate(v)}` : `Moved to ${fmtDate(v)}`);
+    if (left) openStaleReview();
+  });
+
+  $("#stBackBtn").addEventListener("click", () => { closeSheet(); openStaleReview(); });
 }
 
 /* ---------- TIME CARD EDITOR ---------- */
