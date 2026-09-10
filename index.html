@@ -87,6 +87,27 @@ main{padding:14px 14px 24px;}
 .card.tap:active{background:var(--surface-3);}
 .section-title{font-size:13px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:var(--ink-500); margin:18px 2px 8px;}
 .section-title:first-child{margin-top:2px;}
+/* Sections she only wants now and then: a tappable header that stays rolled up
+   until asked, so the home screen isn't five phone screens of scrolling. */
+.collapse-head{
+  width:100%; display:flex; align-items:center; gap:8px; text-align:left; cursor:pointer;
+  background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+  padding:13px 14px; margin-top:10px; color:var(--ink-700); font-family:inherit;
+}
+.collapse-head .ct{
+  flex:1; min-width:0; font-size:13px; font-weight:700; text-transform:uppercase;
+  letter-spacing:.04em; color:var(--ink-500);
+}
+.collapse-head .cmeta{font-size:11px; color:var(--ink-500); font-weight:600; flex-shrink:0;}
+.collapse-head .chev{
+  flex-shrink:0; font-size:19px; line-height:1; color:var(--ink-500);
+  transform:rotate(90deg); transition:transform .18s ease;
+}
+.collapse-head[aria-expanded="true"]{border-color:var(--teal-500); color:var(--teal-700);}
+.collapse-head[aria-expanded="true"] .ct{color:var(--teal-700);}
+.collapse-head[aria-expanded="true"] .chev{transform:rotate(-90deg); color:var(--teal-600);}
+.collapse-head:active{transform:scale(.995);}
+.collapse-body{margin-top:8px;}
 .row{display:flex; align-items:center; gap:10px;}
 .row.between{justify-content:space-between;}
 .stack{display:flex; flex-direction:column; gap:10px;}
@@ -286,7 +307,7 @@ const sb = createClient(CFG.url, CFG.key);
 const BUCKET = "visit-photos";
 // Shown at the bottom of the dashboard so it's possible to confirm at a glance
 // which build is actually running after an upload. Bump this on every release.
-const APP_VERSION = "2026.09.11c";
+const APP_VERSION = "2026.09.11d";
 
 /* ---------- STATE ---------- */
 const DB = {
@@ -304,6 +325,10 @@ const UI = {
   searchQuery: "",
   earnBasis: "paid",          // paid = when the money landed | groomed = when the work was done
   goalRange: "week",          // week | 4wk
+  // Which rolled-up home sections are open. Deliberately NOT persisted: the
+  // point of folding them away is that a fresh open of the app is short, so
+  // they start closed every time rather than creeping back open for good.
+  openSections: {},
 };
 
 /* ---------- SMALL HELPERS ---------- */
@@ -1175,31 +1200,13 @@ function renderDashboard() {
     })()}
 
     <div class="stat-grid" style="margin-bottom:6px;">
-      <div class="stat-tile"><div class="val">${fmtMoney(revenueBetween(startWeek, addDays(startWeek, 7)))}</div><div class="lbl">This week's revenue</div></div>
+      <!-- "This week's revenue" and "This month's revenue" used to sit here too,
+           repeating the Grooming row of the Earnings table a few inches above.
+           Same numbers twice made the screen longer without saying anything new. -->
       <div class="stat-tile"><div class="val" style="color:var(--teal-600)">${fmtMoney(projectedRevenueBetween(startWeek, addDays(startWeek, 7)))}</div><div class="lbl">Projected this week</div></div>
-      <div class="stat-tile"><div class="val">${fmtMoney(revenueBetween(startMonth, endMonth))}</div><div class="lbl">This month's revenue</div></div>
       <div class="stat-tile"><div class="val" style="color:var(--teal-600)">${fmtMoney(projectedRevenueBetween(startMonth, endMonth))}</div><div class="lbl">Projected this month</div></div>
       <div class="stat-tile"><div class="val" style="color:${outstandingTotal > 0 ? "var(--orange-600)" : "var(--ink-900)"}">${fmtMoney(outstandingTotal)}</div><div class="lbl">Outstanding balance</div></div>
       <div class="stat-tile"><div class="val" style="color:var(--teal-600)">${fmtMoney(todayFc.total)}</div><div class="lbl">Today's forecast · ${todayFc.dogs} ${todayFc.dogs === 1 ? "dog" : "dogs"}</div></div>
-    </div>
-
-    <div class="section-title">Revenue by payment method</div>
-    <div class="card">
-      <div class="segmented" style="margin-bottom:14px;">
-        <button data-dash-period="week" class="${period === "week" ? "active" : ""}">This week</button>
-        <button data-dash-period="month" class="${period === "month" ? "active" : ""}">This month</button>
-      </div>
-      <div class="row between" style="margin-bottom:10px;">
-        <span class="muted small">Total collected</span><span class="bold">${fmtMoney(periodRevenue)}</span>
-      </div>
-      ${Object.keys(byMethod).length === 0 ? `<p class="muted small">No paid invoices in this period yet.</p>` :
-        Object.entries(byMethod).sort((a, b) => b[1] - a[1]).map(([method, amt]) => `
-          <div class="bar-row">
-            <div class="bar-lbl">${esc(PAYMENT_METHOD_LABEL[method] || method)}</div>
-            <div class="bar-track"><div class="bar-fill" style="width:${(amt / maxMethod * 100).toFixed(0)}%"></div></div>
-            <div class="bar-val">${fmtMoney(amt)}</div>
-          </div>
-        `).join("")}
     </div>
 
     <div class="section-title">Outstanding balances</div>
@@ -1232,7 +1239,27 @@ function renderDashboard() {
         </div>`;
       }).join("")}
 
-    <div class="section-title">Repeat clients</div>
+    <div class="section-title">Now and then</div>
+    ${collapsible("pay", "Revenue by payment method", "", `
+    <div class="card">
+      <div class="segmented" style="margin-bottom:14px;">
+        <button data-dash-period="week" class="${period === "week" ? "active" : ""}">This week</button>
+        <button data-dash-period="month" class="${period === "month" ? "active" : ""}">This month</button>
+      </div>
+      <div class="row between" style="margin-bottom:10px;">
+        <span class="muted small">Total collected</span><span class="bold">${fmtMoney(periodRevenue)}</span>
+      </div>
+      ${Object.keys(byMethod).length === 0 ? `<p class="muted small">No paid invoices in this period yet.</p>` :
+        Object.entries(byMethod).sort((a, b) => b[1] - a[1]).map(([method, amt]) => `
+          <div class="bar-row">
+            <div class="bar-lbl">${esc(PAYMENT_METHOD_LABEL[method] || method)}</div>
+            <div class="bar-track"><div class="bar-fill" style="width:${(amt / maxMethod * 100).toFixed(0)}%"></div></div>
+            <div class="bar-val">${fmtMoney(amt)}</div>
+          </div>
+        `).join("")}
+    </div>
+    `)}
+    ${collapsible("repeat", "Repeat clients", repeats.length ? String(repeats.length) : "", `
     ${repeats.length === 0 ? `<div class="card empty"><div class="ic">🔁</div>Complete a few visits to see your regulars here.</div>` :
       `<div class="card">` + repeats.map((r, i) => `
         <div class="row between" style="padding:8px 0;${i > 0 ? "border-top:1px solid var(--border);" : ""}">
@@ -1246,14 +1273,15 @@ function renderDashboard() {
           <div class="pill">${r.count} visits</div>
         </div>
       `).join("") + `</div>`}
-
-    <div class="section-title">Export to spreadsheet</div>
+    `)}
+    ${collapsible("export", "Export to spreadsheet", "", `
     <div class="card">
       <p class="tiny muted" style="margin:0 0 10px;">Downloads a .csv file that opens in Excel, Numbers, or Google Sheets.</p>
       <button class="btn btn-outline btn-sm" id="exportClientsBtn" style="width:100%;margin-bottom:8px;">📇 Clients &amp; pets (${DB.clients.length})</button>
       <button class="btn btn-outline btn-sm" id="exportApptsBtn" style="width:100%;margin-bottom:8px;">💵 Appointments &amp; payments (${DB.appointments.length})</button>
       <button class="btn btn-outline btn-sm" id="exportHoursBtn" style="width:100%;">🕐 Hours worked (${DB.timeEntries.length})</button>
     </div>
+    `)}
 
     <div class="tiny muted" style="text-align:center;margin:18px 0 4px;">Version ${esc(APP_VERSION)}</div>
   `;
@@ -1263,6 +1291,18 @@ function bindDashboardEvents() {
   document.querySelectorAll("[data-dash-period]").forEach(b => b.addEventListener("click", () => { UI.dashPeriod = b.dataset.dashPeriod; render(); }));
   document.querySelectorAll("[data-earn-basis]").forEach(b => b.addEventListener("click", () => { UI.earnBasis = b.dataset.earnBasis; render(); }));
   document.querySelectorAll("[data-goal-range]").forEach(b => b.addEventListener("click", () => { UI.goalRange = b.dataset.goalRange; render(); }));
+  document.querySelectorAll("[data-collapse]").forEach(b => b.addEventListener("click", () => {
+    const k = b.dataset.collapse;
+    UI.openSections[k] = !UI.openSections[k];
+    // Keep the header she just tapped where it was under her thumb, so opening
+    // a long section doesn't throw the page somewhere else.
+    const main = $("#main");
+    const before = b.getBoundingClientRect().top;
+    const scroll = main.scrollTop;
+    render();
+    const again = $(`[data-collapse="${k}"]`);
+    if (again) main.scrollTop = scroll + (again.getBoundingClientRect().top - before);
+  }));
   document.querySelectorAll("[data-open-appt]").forEach(b => b.addEventListener("click", () => openAppointmentDetail(b.dataset.openAppt)));
 
   const expClients = $("#exportClientsBtn");
@@ -1914,6 +1954,20 @@ function openPetDetail(petId) {
   $("#petAddApptBtn").addEventListener("click", () => openAppointmentForm(null, { petId: pet.id, clientId: pet.client_id }));
   overlay.querySelectorAll("[data-open-appt]").forEach(b => b.addEventListener("click", () => openAppointmentDetail(b.dataset.openAppt)));
 }
+/* A section she only looks at now and then: header always drawn, body only
+   when she's asked for it. */
+function collapsible(key, title, meta, bodyHtml) {
+  const open = !!UI.openSections[key];
+  return `
+    <button class="collapse-head" data-collapse="${key}" aria-expanded="${open}">
+      <span class="ct">${esc(title)}</span>
+      ${meta ? `<span class="cmeta">${esc(meta)}</span>` : ""}
+      <span class="chev">›</span>
+    </button>
+    ${open ? `<div class="collapse-body">${bodyHtml}</div>` : ""}
+  `;
+}
+
 function infoRow(label, value, warn) {
   return `<div class="card small" style="box-shadow:none;background:${warn ? "var(--orange-100)" : "var(--surface-3)"};">
     <div class="tiny bold" style="text-transform:uppercase;letter-spacing:.03em;color:${warn ? "var(--orange-600)" : "var(--ink-500)"};margin-bottom:3px;">${esc(label)}</div>
