@@ -278,7 +278,7 @@ const sb = createClient(CFG.url, CFG.key);
 const BUCKET = "visit-photos";
 // Shown at the bottom of the dashboard so it's possible to confirm at a glance
 // which build is actually running after an upload. Bump this on every release.
-const APP_VERSION = "2026.09.10c";
+const APP_VERSION = "2026.09.11a";
 
 /* ---------- STATE ---------- */
 const DB = {
@@ -295,6 +295,7 @@ const UI = {
   apptFilter: { status: "all", from: "", to: "", paid: "all" },
   searchQuery: "",
   earnBasis: "paid",          // paid = when the money landed | groomed = when the work was done
+  goalRange: "week",          // week | 4wk
 };
 
 /* ---------- SMALL HELPERS ---------- */
@@ -333,6 +334,12 @@ function durationChoices(current) {
   return [...new Set(base)].sort((a, b) => a - b);
 }
 function fmtMoney(n) { n = Number(n || 0); return "$" + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+// Goal targets are round numbers she typed in herself, so "$400" reads better
+// than "$400.00". Actual money keeps its cents.
+function fmtMoneyShort(n) {
+  n = Number(n || 0);
+  return Number.isInteger(n) ? "$" + n.toLocaleString() : fmtMoney(n);
+}
 function toDatetimeLocal(d) {
   const x = new Date(d); const p = n => String(n).padStart(2, "0");
   return `${x.getFullYear()}-${p(x.getMonth() + 1)}-${p(x.getDate())}T${p(x.getHours())}:${p(x.getMinutes())}`;
@@ -637,6 +644,91 @@ function fmtElapsed(ms) {
   const p = n => String(n).padStart(2, "0");
   return `${hh}:${p(mm)}:${p(ss)}`;
 }
+/* ---------- GOALS ----------
+   Her targets are grooming money ONLY. Tips are excluded on purpose: she
+   doesn't want to plan around money nobody promised her, so a tip is always
+   upside above the goal rather than part of hitting it.
+   Targets live on the device rather than in the database — they're a personal
+   setting, not business data, and this keeps them changeable without a
+   migration every time she moves the bar. */
+const GOAL_DEFAULTS = { week: 2000, day: 400, hour: 70, hours: 25 };
+const GOALS_KEY = "fag_goals_v1";
+function goals() {
+  try { return { ...GOAL_DEFAULTS, ...JSON.parse(localStorage.getItem(GOALS_KEY) || "{}") }; }
+  catch (e) { return { ...GOAL_DEFAULTS }; }
+}
+function saveGoals(g) { try { localStorage.setItem(GOALS_KEY, JSON.stringify(g)); } catch (e) {} }
+
+// One window's worth of goal maths. Money is grooming charges only, counted on
+// the day the work was done, so it lines up with the hours from the time card.
+// `weeks` scales the weekly target to the length of the window.
+function goalProgress(from, to, weeks, now) {
+  const g = goals();
+  const appts = completedInWindow(from, to);
+  const money = appts.reduce((s, a) => s + apptTotal(a.id), 0);
+  const hours = hoursBetween(from, to, now);
+  const target = g.week * weeks;
+  // Day totals drive the $400/day goal. Keyed by local date so a late finish
+  // stays on the day she worked it.
+  const byDay = new Map();
+  for (const a of appts) {
+    const k = toDateOnlyLocal(new Date(a.scheduled_at));
+    byDay.set(k, (byDay.get(k) || 0) + apptTotal(a.id));
+  }
+  const days = [...byDay.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1));
+  return {
+    g, money, hours, target, days,
+    short: Math.max(0, target - money),
+    over: Math.max(0, money - target),
+    rate: hours > 0.0001 ? money / hours : null,
+    appts: appts.length,
+    daysWorked: days.length,
+    daysHit: days.filter(([, v]) => v >= g.day).length,
+  };
+}
+
+function openGoalsForm() {
+  const g = goals();
+  openSheet("Your Goals", `
+    <p class="tiny muted" style="margin:0 0 14px;">These count grooming money only. Tips are never counted toward a goal, so every tip lands above it.</p>
+    <div class="field"><label>Per week</label>
+      <input type="number" inputmode="decimal" step="any" id="gWeek" value="${esc(String(g.week))}">
+    </div>
+    <div class="field"><label>Per day</label>
+      <input type="number" inputmode="decimal" step="any" id="gDay" value="${esc(String(g.day))}">
+    </div>
+    <div class="field"><label>Per hour</label>
+      <input type="number" inputmode="decimal" step="any" id="gHour" value="${esc(String(g.hour))}">
+    </div>
+    <div class="field"><label>Hours you want to work each week</label>
+      <input type="number" inputmode="decimal" step="any" id="gHours" value="${esc(String(g.hours))}">
+      <div class="tiny muted" style="margin-top:4px;">Used for the "what rate finishes the week in this many hours" line.</div>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-primary" id="gSaveBtn">Save</button>
+      <button class="btn btn-outline" id="gResetBtn">Reset to defaults</button>
+    </div>
+  `);
+
+  $("#gSaveBtn").addEventListener("click", () => {
+    const num = (id, fallback) => {
+      const v = Number($(id).value);
+      return Number.isFinite(v) && v > 0 ? v : fallback;
+    };
+    saveGoals({
+      week: num("#gWeek", GOAL_DEFAULTS.week),
+      day: num("#gDay", GOAL_DEFAULTS.day),
+      hour: num("#gHour", GOAL_DEFAULTS.hour),
+      hours: num("#gHours", GOAL_DEFAULTS.hours),
+    });
+    closeSheet(); render(); toast("Goals saved");
+  });
+  $("#gResetBtn").addEventListener("click", () => {
+    saveGoals({ ...GOAL_DEFAULTS });
+    closeSheet(); render(); toast("Goals reset");
+  });
+}
+
 /* ---------- FORECAST / PROJECTED REVENUE ----------
    revenueBetween() counts money actually COLLECTED. These count work that is
    ON THE BOOKS — the value of every appointment that hasn't been cancelled or
@@ -867,7 +959,9 @@ function renderDashboard() {
   // so it uses the groom date whichever way the toggle is set. Dividing money
   // that arrived this week by hours worked this week compares two different
   // sets of days and gives a rate that describes neither.
-  const rateMoney = (f, t) => earnedRevenueBetween(f, t) + earnedTipsBetween(f, t);
+  // Tips are deliberately left out: the rate has to be something she can price
+  // against, and a tip isn't promised. Every tip then lands ABOVE the goal.
+  const rateMoney = (f, t) => earnedRevenueBetween(f, t);
   const perHour = (money, hours) => (hours > 0.0001 ? fmtMoney(money / hours) + "/hr" : "—");
 
   return `
@@ -938,8 +1032,89 @@ function renderDashboard() {
         <span style="width:88px;text-align:right;font-weight:700;">${perHour(rateMoney(startWeek, weekEnd), earn.weekHours)}</span>
         <span style="width:88px;text-align:right;font-weight:700;">${perHour(rateMoney(startMonth, endMonth), earn.monthHours)}</span>
       </div>
-      <p class="tiny muted" style="margin:8px 0 0;">Per hour always counts work on the day you did it, so the money and the hours cover the same days. Includes tips. Hours come from the time card above.</p>
+      <p class="tiny muted" style="margin:8px 0 0;">Per hour always counts work on the day you did it, so the money and the hours cover the same days. Grooming only — tips are not counted, so every tip lands on top. Hours come from the time card above.</p>
     </div>
+
+    ${(() => {
+      const gRange = UI.goalRange || "week";
+      const gWeeks = gRange === "week" ? 1 : 4;
+      const gFrom = gRange === "week" ? startWeek : addDays(startWeek, -28);
+      const gTo = gRange === "week" ? weekEnd : startWeek;
+      const gp = goalProgress(gFrom, gTo, gWeeks, now);
+      const g = gp.g;
+      const span = gRange === "week" ? "this week" : "over four weeks";
+      const goalRow = (label, sub, value, note, ok) => `
+        <div class="row between" style="padding:9px 0;border-top:1px solid var(--border);align-items:flex-start;gap:10px;">
+          <span style="flex:1;min-width:0;">
+            <span class="small bold">${label}</span>
+            <span class="tiny muted" style="display:block;">${sub}</span>
+          </span>
+          <span style="text-align:right;flex-shrink:0;">
+            <span class="bold">${value}</span>
+            <span class="tiny" style="display:block;font-weight:700;color:${ok ? "var(--teal-600)" : "var(--orange-600)"};">${note}</span>
+          </span>
+        </div>`;
+      const rateNote = gp.rate === null ? "no hours logged"
+        : gp.rate >= g.hour ? `${fmtMoney(gp.rate - g.hour)} over` : `short ${fmtMoney(g.hour - gp.rate)}`;
+      return `
+    <div class="section-title">Goals</div>
+    <div class="card">
+      <div class="row between" style="align-items:center;gap:10px;margin-bottom:9px;">
+        <span class="tiny bold" style="text-transform:uppercase;letter-spacing:.04em;color:var(--teal-700);">Grooming only · tips not counted</span>
+        <button class="btn btn-outline btn-sm" id="editGoalsBtn" style="flex-shrink:0;padding:4px 11px;">Edit</button>
+      </div>
+      <div class="segmented" style="margin-bottom:4px;">
+        <button data-goal-range="week" class="${gRange === "week" ? "active" : ""}">This week</button>
+        <button data-goal-range="4wk" class="${gRange === "4wk" ? "active" : ""}">Last 4 weeks</button>
+      </div>
+      ${goalRow("Grooming money", `Goal ${fmtMoneyShort(gp.target)} ${span}`, fmtMoney(gp.money),
+        gp.short > 0 ? `short ${fmtMoney(gp.short)}` : `${fmtMoney(gp.over)} over`, gp.short <= 0)}
+      ${goalRow("Per hour", `Goal ${fmtMoneyShort(g.hour)}/hr · ${fmtHours(gp.hours)} worked`,
+        gp.rate === null ? "—" : fmtMoney(gp.rate) + "/hr", rateNote, gp.rate !== null && gp.rate >= g.hour)}
+      ${goalRow(`${fmtMoneyShort(g.day)} days`, `Days you worked in this stretch`,
+        `${gp.daysHit} of ${gp.daysWorked}`,
+        gp.daysWorked && gp.daysHit === gp.daysWorked ? "all of them" : `${gp.daysWorked - gp.daysHit} came up short`,
+        gp.daysWorked > 0 && gp.daysHit === gp.daysWorked)}
+
+      <div style="border-top:1.5px solid var(--border);margin-top:11px;padding-top:10px;">
+        <div class="tiny bold muted" style="text-transform:uppercase;letter-spacing:.04em;">The raise that closes the gap</div>
+        ${gp.appts === 0 ? `<p class="tiny muted" style="margin:7px 0 0;">No finished appointments in this stretch yet.</p>`
+          : gp.short <= 0 ? `<p class="small" style="margin:7px 0 0;">Already ${fmtMoney(gp.over)} over goal on ${gp.appts} appointment${gp.appts === 1 ? "" : "s"} — nothing to make up.</p>`
+          : `<div class="row between" style="margin-top:7px;align-items:baseline;gap:10px;">
+              <span class="small" style="flex:1;min-width:0;">${gp.appts} appointment${gp.appts === 1 ? "" : "s"} · short ${fmtMoney(gp.short)}</span>
+              <span class="bold" style="color:var(--orange-600);font-size:20px;flex-shrink:0;">+${fmtMoney(gp.short / gp.appts)}</span>
+            </div>
+            <p class="tiny muted" style="margin:5px 0 0;">That much added to every appointment would have hit ${fmtMoneyShort(gp.target)} ${span}.${gRange === "week" ? " This week is still filling in — the four-week view is the steadier number to price off." : ""}</p>`}
+      </div>
+
+      <div style="border-top:1.5px solid var(--border);margin-top:11px;padding-top:10px;">
+        <div class="tiny bold muted" style="text-transform:uppercase;letter-spacing:.04em;">Hours it takes to make ${fmtMoneyShort(g.week)}</div>
+        <div class="row between small" style="padding:7px 0;">
+          <span class="muted" style="flex:1;">At your rate right now${gp.rate ? ` (${fmtMoney(gp.rate)}/hr)` : ""}</span>
+          <span class="bold" style="flex-shrink:0;">${gp.rate ? fmtHours(g.week / gp.rate) : "—"}</span>
+        </div>
+        <div class="row between small" style="padding:7px 0;border-top:1px solid var(--border);">
+          <span class="muted" style="flex:1;">At your ${fmtMoneyShort(g.hour)}/hr goal</span>
+          <span class="bold" style="flex-shrink:0;">${fmtHours(g.week / g.hour)}</span>
+        </div>
+        <div class="row between small" style="padding:7px 0;border-top:1px solid var(--border);">
+          <span class="muted" style="flex:1;">To finish it in ${g.hours} hours, you'd need</span>
+          <span class="bold" style="flex-shrink:0;color:var(--teal-700);">${fmtMoneyShort(g.week / g.hours)}/hr</span>
+        </div>
+      </div>
+
+      ${gRange === "week" && gp.days.length ? `
+      <div style="border-top:1.5px solid var(--border);margin-top:11px;padding-top:10px;">
+        <div class="tiny bold muted" style="text-transform:uppercase;letter-spacing:.04em;">Day by day</div>
+        ${gp.days.map(([k, v]) => `
+          <div class="row between small" style="padding:6px 0;">
+            <span class="muted" style="flex:1;">${esc(fmtDate(parseDateOnly(k)))}</span>
+            <span style="flex-shrink:0;font-weight:700;color:${v >= g.day ? "var(--teal-600)" : "var(--ink-900)"};">${fmtMoney(v)}${v >= g.day ? " ✓" : ""}</span>
+          </div>`).join("")}
+      </div>` : ""}
+    </div>
+`;
+    })()}
 
     <div class="stat-grid" style="margin-bottom:6px;">
       <div class="stat-tile"><div class="val">${fmtMoney(revenueBetween(startWeek, addDays(startWeek, 7)))}</div><div class="lbl">This week's revenue</div></div>
@@ -1048,6 +1223,7 @@ function renderDashboard() {
 function bindDashboardEvents() {
   document.querySelectorAll("[data-dash-period]").forEach(b => b.addEventListener("click", () => { UI.dashPeriod = b.dataset.dashPeriod; render(); }));
   document.querySelectorAll("[data-earn-basis]").forEach(b => b.addEventListener("click", () => { UI.earnBasis = b.dataset.earnBasis; render(); }));
+  document.querySelectorAll("[data-goal-range]").forEach(b => b.addEventListener("click", () => { UI.goalRange = b.dataset.goalRange; render(); }));
   document.querySelectorAll("[data-open-appt]").forEach(b => b.addEventListener("click", () => openAppointmentDetail(b.dataset.openAppt)));
 
   const expClients = $("#exportClientsBtn");
@@ -1086,6 +1262,9 @@ function bindDashboardEvents() {
     await loadAll(); render();
     toast(`Clocked out — ${fmtHours(entryMs({ ...shift, clock_out: new Date().toISOString() }) / 3600000)}`);
   });
+  const goalsBtn = $("#editGoalsBtn");
+  if (goalsBtn) goalsBtn.addEventListener("click", () => openGoalsForm());
+
   const tcBtn = $("#timeCardBtn");
   if (tcBtn) tcBtn.addEventListener("click", () => openTimeCard());
 
