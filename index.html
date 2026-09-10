@@ -60,9 +60,17 @@ nav.bottomnav{
 nav.bottomnav button{
   flex:1; border:none; background:none; padding:9px 2px 8px; display:flex; flex-direction:column;
   align-items:center; gap:3px; color:var(--ink-500); font-size:11px; font-weight:600; cursor:pointer;
+  position:relative; min-width:0;
 }
 nav.bottomnav button .ic{font-size:21px; line-height:1;}
 nav.bottomnav button.active{color:var(--teal-600);}
+/* Sits on the Lists tab when past visits still need closing out. */
+.nav-badge{
+  position:absolute; top:5px; left:50%; margin-left:5px;
+  min-width:17px; height:17px; padding:0 4px; border-radius:9px;
+  background:var(--orange-600); color:#fff; font-size:10px; font-weight:800;
+  line-height:17px; text-align:center; box-shadow:0 0 0 2px var(--surface);
+}
 
 .fab{
   position:fixed; right:18px; bottom:calc(84px + var(--safe-bottom)); z-index:25;
@@ -278,7 +286,7 @@ const sb = createClient(CFG.url, CFG.key);
 const BUCKET = "visit-photos";
 // Shown at the bottom of the dashboard so it's possible to confirm at a glance
 // which build is actually running after an upload. Bump this on every release.
-const APP_VERSION = "2026.09.11b";
+const APP_VERSION = "2026.09.11c";
 
 /* ---------- STATE ---------- */
 const DB = {
@@ -511,8 +519,9 @@ const TABS = [
   { id: "clients", label: "Clients", icon: "🐾" },
   { id: "services", label: "Services", icon: "✂️" },
   { id: "search", label: "Search", icon: "🔎" },
+  { id: "lists", label: "Lists", icon: "📋" },
 ];
-const TAB_TITLES = { dashboard: "Fetch A Groomer", calendar: "Calendar", clients: "Clients & Pets", services: "Services & Pricing", search: "Search" };
+const TAB_TITLES = { dashboard: "Fetch A Groomer", calendar: "Calendar", clients: "Clients & Pets", services: "Services & Pricing", search: "Search", lists: "Lists" };
 
 function renderShell() {
   $("#bottomnav").innerHTML = TABS.map(t => `
@@ -521,6 +530,7 @@ function renderShell() {
     </button>
   `).join("");
   $("#bottomnav").querySelectorAll("button").forEach(b => b.addEventListener("click", () => setTab(b.dataset.tab)));
+  updateNavBadge();
 
   $("#topbar").innerHTML = `<div class="inner" style="display:flex;align-items:center;gap:10px;width:100%;">
     <h1>${esc(TAB_TITLES[UI.tab])}</h1>
@@ -539,6 +549,22 @@ function renderShell() {
   }
 }
 
+/* The close-out list used to sit on the home screen where it was impossible to
+   miss. Now that it lives on its own tab, this badge is what keeps it from
+   going unnoticed — it counts STOPS, not dogs, because a three-dog house is
+   one decision. The waiting list is deliberately not counted: it's a reference
+   list that always has somebody on it, and a badge that never clears is a
+   badge you stop seeing. */
+function updateNavBadge() {
+  const btn = $('#bottomnav button[data-tab="lists"]');
+  if (!btn) return;
+  const n = staleStops().length;
+  let dot = btn.querySelector(".nav-badge");
+  if (!n) { if (dot) dot.remove(); return; }
+  if (!dot) { dot = el('<span class="nav-badge"></span>'); btn.appendChild(dot); }
+  dot.textContent = n > 9 ? "9+" : String(n);
+}
+
 function setTab(tab) {
   UI.tab = tab;
   renderShell();
@@ -555,7 +581,10 @@ function render() {
   else if (UI.tab === "clients") main.innerHTML = renderClientsView();
   else if (UI.tab === "services") main.innerHTML = renderServicesView();
   else if (UI.tab === "search") main.innerHTML = renderSearchView();
+  else if (UI.tab === "lists") main.innerHTML = renderListsView();
   bindViewEvents();
+  // Closing a visit out changes the count, so refresh the badge on every paint.
+  updateNavBadge();
 }
 
 /* =====================================================================
@@ -974,9 +1003,6 @@ function renderDashboard() {
   const todayFc = dayForecast(now);
 
   const shift = openShift();
-  const waiting = waitingList();
-  const stale = staleAppointments();
-  const staleValue = stale.reduce((s, a) => s + apptTotal(a.id), 0);
   const weekEnd = addDays(startWeek, 7);
 
   // "paid" counts money on the day it landed; "groomed" counts it on the day
@@ -1023,14 +1049,6 @@ function renderDashboard() {
       `}
       <button class="btn btn-outline btn-sm" id="timeCardBtn" style="width:100%;margin-top:10px;">🕐 View / edit time card</button>
     </div>
-
-    ${stale.length ? `
-    <div class="card" style="background:var(--orange-100);border:1px solid var(--orange-500);box-shadow:none;">
-      <div class="tiny bold" style="text-transform:uppercase;letter-spacing:.04em;color:var(--orange-600);">Needs closing out</div>
-      <div class="bold" style="font-size:17px;margin-top:2px;">${stale.length} past ${stale.length === 1 ? "visit is" : "visits are"} still marked Scheduled</div>
-      <div class="tiny" style="color:var(--orange-600);margin-top:2px;">${fmtMoney(staleValue)} — left out of your projections until you say what happened.</div>
-      <button class="btn btn-outline btn-sm" id="reviewStaleBtn" style="width:100%;margin-top:10px;">Review them</button>
-    </div>` : ""}
 
     <div class="section-title">Earnings</div>
     <div class="card">
@@ -1229,25 +1247,6 @@ function renderDashboard() {
         </div>
       `).join("") + `</div>`}
 
-    <div class="section-title">Waiting list${waiting.length ? ` · ${waiting.length}` : ""}</div>
-    <div class="card">
-      <p class="tiny muted" style="margin:0 0 10px;">People who want a slot but aren't booked yet — call-backs, reschedules, and anyone who'd take a cancellation.</p>
-      <button class="btn btn-secondary btn-sm" id="addWaitBtn" style="width:100%;">+ Add someone</button>
-      ${waiting.length ? waiting.map(w => `
-        <div class="row between" style="align-items:flex-start;gap:10px;padding:11px 0;border-top:1px solid var(--border);margin-top:11px;">
-          <div style="min-width:0;flex:1;" class="tap" data-edit-wait="${w.id}">
-            <div class="row" style="gap:7px;align-items:center;flex-wrap:wrap;">
-              <span class="pill" style="${WAIT_KIND[w.kind]?.style || ""}">${esc(WAIT_KIND[w.kind]?.label || w.kind)}</span>
-              <span class="bold small">${esc(w.name)}</span>
-            </div>
-            ${w.note ? `<div class="tiny muted" style="margin-top:3px;">${esc(w.note)}</div>` : ""}
-            <div class="tiny muted" style="margin-top:2px;opacity:.75;">Added ${fmtDate(w.created_at)}</div>
-          </div>
-          <button class="btn btn-outline btn-sm" data-clear-wait="${w.id}" style="flex-shrink:0;padding:5px 10px;">Done</button>
-        </div>
-      `).join("") : `<p class="tiny muted" style="margin:11px 0 0;text-align:center;">Nobody waiting right now.</p>`}
-    </div>
-
     <div class="section-title">Export to spreadsheet</div>
     <div class="card">
       <p class="tiny muted" style="margin:0 0 10px;">Downloads a .csv file that opens in Excel, Numbers, or Google Sheets.</p>
@@ -1308,6 +1307,69 @@ function bindDashboardEvents() {
   const tcBtn = $("#timeCardBtn");
   if (tcBtn) tcBtn.addEventListener("click", () => openTimeCard());
 
+  startShiftTicker();
+}
+
+// Keeps the running shift clock live without re-rendering the whole dashboard
+// every second (which would fight with taps and scrolling).
+let shiftTimer = null;
+function startShiftTicker() {
+  if (shiftTimer) { clearInterval(shiftTimer); shiftTimer = null; }
+  const el = $("#shiftElapsed");
+  if (!el) return;
+  shiftTimer = setInterval(() => {
+    const node = $("#shiftElapsed");
+    const shift = openShift();
+    if (!node || !shift) { clearInterval(shiftTimer); shiftTimer = null; return; }
+    node.textContent = fmtElapsed(entryMs(shift));
+  }, 1000);
+}
+
+/* =====================================================================
+   LISTS TAB
+   Two running lists that are about what still needs doing rather than what
+   already happened, so they don't belong among the dashboard's numbers.
+   Close-outs sit on top: they're the ones with a deadline attached, because
+   an un-closed visit quietly drops out of every projection until she says
+   what happened to it.
+   ===================================================================== */
+function renderListsView() {
+  const stops = staleStops();
+  const visits = staleAppointments();
+  const staleValue = visits.reduce((s, a) => s + apptTotal(a.id), 0);
+  const waiting = waitingList();
+
+  return `
+    <div class="section-title">Needs closing out${stops.length ? ` · ${stops.length}` : ""}</div>
+    ${stops.length ? `
+    <div class="card" style="background:var(--orange-100);border:1px solid var(--orange-500);box-shadow:none;">
+      <div class="bold" style="font-size:17px;">${stops.length} past ${stops.length === 1 ? "stop is" : "stops are"} still marked Scheduled${visits.length !== stops.length ? ` · ${visits.length} dogs` : ""}</div>
+      <div class="tiny" style="color:var(--orange-600);margin-top:2px;">${fmtMoney(staleValue)} — left out of your projections until you say what happened.</div>
+      <button class="btn btn-outline btn-sm" id="reviewStaleBtn" style="width:100%;margin-top:10px;">Review them</button>
+    </div>` : `<div class="card empty"><div class="ic">✅</div>Every past visit is closed out.</div>`}
+
+    <div class="section-title">Waiting list${waiting.length ? ` · ${waiting.length}` : ""}</div>
+    <div class="card">
+      <p class="tiny muted" style="margin:0 0 10px;">People who want a slot but aren't booked yet — call-backs, reschedules, and anyone who'd take a cancellation.</p>
+      <button class="btn btn-secondary btn-sm" id="addWaitBtn" style="width:100%;">+ Add someone</button>
+      ${waiting.length ? waiting.map(w => `
+        <div class="row between" style="align-items:flex-start;gap:10px;padding:11px 0;border-top:1px solid var(--border);margin-top:11px;">
+          <div style="min-width:0;flex:1;" class="tap" data-edit-wait="${w.id}">
+            <div class="row" style="gap:7px;align-items:center;flex-wrap:wrap;">
+              <span class="pill" style="${WAIT_KIND[w.kind]?.style || ""}">${esc(WAIT_KIND[w.kind]?.label || w.kind)}</span>
+              <span class="bold small">${esc(w.name)}</span>
+            </div>
+            ${w.note ? `<div class="tiny muted" style="margin-top:3px;">${esc(w.note)}</div>` : ""}
+            <div class="tiny muted" style="margin-top:2px;opacity:.75;">Added ${fmtDate(w.created_at)}</div>
+          </div>
+          <button class="btn btn-outline btn-sm" data-clear-wait="${w.id}" style="flex-shrink:0;padding:5px 10px;">Done</button>
+        </div>
+      `).join("") : `<p class="tiny muted" style="margin:11px 0 0;text-align:center;">Nobody waiting right now.</p>`}
+    </div>
+  `;
+}
+
+function bindListsEvents() {
   const staleBtn = $("#reviewStaleBtn");
   if (staleBtn) staleBtn.addEventListener("click", () => openStaleReview());
 
@@ -1326,23 +1388,6 @@ function bindDashboardEvents() {
     await loadAll(); render();
     toast(`${entry?.name || "Entry"} cleared`);
   }));
-
-  startShiftTicker();
-}
-
-// Keeps the running shift clock live without re-rendering the whole dashboard
-// every second (which would fight with taps and scrolling).
-let shiftTimer = null;
-function startShiftTicker() {
-  if (shiftTimer) { clearInterval(shiftTimer); shiftTimer = null; }
-  const el = $("#shiftElapsed");
-  if (!el) return;
-  shiftTimer = setInterval(() => {
-    const node = $("#shiftElapsed");
-    const shift = openShift();
-    if (!node || !shift) { clearInterval(shiftTimer); shiftTimer = null; return; }
-    node.textContent = fmtElapsed(entryMs(shift));
-  }, 1000);
 }
 
 /* ---------- WAITING LIST ----------
@@ -3208,6 +3253,7 @@ function bindViewEvents() {
   else if (UI.tab === "clients") bindClientsEvents();
   else if (UI.tab === "services") bindServicesEvents();
   else if (UI.tab === "search") bindSearchEvents();
+  else if (UI.tab === "lists") bindListsEvents();
 }
 
 /* =====================================================================
