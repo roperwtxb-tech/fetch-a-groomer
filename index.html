@@ -278,7 +278,7 @@ const sb = createClient(CFG.url, CFG.key);
 const BUCKET = "visit-photos";
 // Shown at the bottom of the dashboard so it's possible to confirm at a glance
 // which build is actually running after an upload. Bump this on every release.
-const APP_VERSION = "2026.09.09b";
+const APP_VERSION = "2026.09.10";
 
 /* ---------- STATE ---------- */
 const DB = {
@@ -643,8 +643,21 @@ function fmtElapsed(ms) {
 function bookableAppts(appts) {
   return appts.filter(a => a.status !== "cancelled" && a.status !== "no_show");
 }
+// A visit whose day has already passed but which was never marked completed,
+// cancelled or no-show. Either it got missed on the day or it never happened —
+// either way it is not money still on its way, so counting it as "projected"
+// quietly inflates the figure. Today's own appointments are never stale; she
+// may still be on her way to them.
+function isStaleAppointment(a) {
+  return a.status === "scheduled" && new Date(a.scheduled_at) < startOfDay(new Date());
+}
+function staleAppointments() {
+  return DB.appointments.filter(isStaleAppointment)
+    .sort((a, b) => new Date(a.scheduled_at) - new Date(b.scheduled_at));
+}
 function projectedRevenueBetween(from, to) {
   return bookableAppts(DB.appointments)
+    .filter(a => !isStaleAppointment(a))
     .filter(a => { const d = new Date(a.scheduled_at); return d >= from && d < to; })
     .reduce((s, a) => s + apptTotal(a.id), 0);
 }
@@ -832,6 +845,8 @@ function renderDashboard() {
   const todayFc = dayForecast(now);
 
   const shift = openShift();
+  const stale = staleAppointments();
+  const staleValue = stale.reduce((s, a) => s + apptTotal(a.id), 0);
   const weekEnd = addDays(startWeek, 7);
 
   // "paid" counts money on the day it landed; "groomed" counts it on the day
@@ -874,6 +889,14 @@ function renderDashboard() {
       `}
       <button class="btn btn-outline btn-sm" id="timeCardBtn" style="width:100%;margin-top:10px;">🕐 View / edit time card</button>
     </div>
+
+    ${stale.length ? `
+    <div class="card" style="background:var(--orange-100);border:1px solid var(--orange-500);box-shadow:none;">
+      <div class="tiny bold" style="text-transform:uppercase;letter-spacing:.04em;color:var(--orange-600);">Needs closing out</div>
+      <div class="bold" style="font-size:17px;margin-top:2px;">${stale.length} past ${stale.length === 1 ? "visit is" : "visits are"} still marked Scheduled</div>
+      <div class="tiny" style="color:var(--orange-600);margin-top:2px;">${fmtMoney(staleValue)} — left out of your projections until you say what happened.</div>
+      <button class="btn btn-outline btn-sm" id="reviewStaleBtn" style="width:100%;margin-top:10px;">Review them</button>
+    </div>` : ""}
 
     <div class="section-title">Earnings</div>
     <div class="card">
@@ -1044,6 +1067,9 @@ function bindDashboardEvents() {
   const tcBtn = $("#timeCardBtn");
   if (tcBtn) tcBtn.addEventListener("click", () => openTimeCard());
 
+  const staleBtn = $("#reviewStaleBtn");
+  if (staleBtn) staleBtn.addEventListener("click", () => openStaleReview());
+
   startShiftTicker();
 }
 
@@ -1060,6 +1086,58 @@ function startShiftTicker() {
     if (!node || !shift) { clearInterval(shiftTimer); shiftTimer = null; return; }
     node.textContent = fmtElapsed(entryMs(shift));
   }, 1000);
+}
+
+/* ---------- CLOSE OUT PAST VISITS ----------
+   Every number in the app leans on an appointment's status being true. This is
+   the one place to fix a whole backlog in a few taps instead of opening each
+   visit one at a time. */
+function openStaleReview() {
+  const list = staleAppointments();
+  if (!list.length) { toast("Nothing to close out"); return; }
+  const totalValue = list.reduce((s, a) => s + apptTotal(a.id), 0);
+
+  const rows = list.map(a => {
+    const pet = getPet(a.pet_id), client = getClient(a.client_id);
+    return `<div class="card" style="margin-bottom:8px;">
+      <div class="row between" style="align-items:flex-start;gap:10px;">
+        <div style="min-width:0;">
+          <div class="bold small">${esc(pet?.name || "Pet")} <span class="muted">— ${esc(client?.name || "")}</span></div>
+          <div class="tiny muted">${fmtDate(a.scheduled_at)} · ${fmtTime(a.scheduled_at)}</div>
+        </div>
+        <span class="bold small" style="flex-shrink:0;">${fmtMoney(apptTotal(a.id))}</span>
+      </div>
+      <div class="btn-row" style="margin-top:10px;gap:6px;">
+        <button class="btn btn-primary btn-sm" data-stale-set="completed" data-appt="${a.id}">Did it</button>
+        <button class="btn btn-secondary btn-sm" data-stale-set="no_show" data-appt="${a.id}">No-show</button>
+        <button class="btn btn-outline btn-sm" data-stale-set="cancelled" data-appt="${a.id}">Cancelled</button>
+      </div>
+    </div>`;
+  }).join("");
+
+  openSheet("Close Out Past Visits", `
+    <p class="muted small" style="margin-bottom:14px;">
+      These ${list.length === 1 ? "visit's day has" : "visits' days have"} passed but ${list.length === 1 ? "it was" : "they were"} never closed out,
+      so ${fmtMoney(totalValue)} is sitting in limbo. Say what happened and your
+      numbers sort themselves out.
+    </p>
+    <p class="tiny muted" style="margin:-8px 0 14px;">Tapping <strong>Did it</strong> marks the visit completed — you can add the payment afterwards from the appointment itself.</p>
+    ${rows}
+  `);
+
+  document.querySelectorAll("[data-stale-set]").forEach(b => b.addEventListener("click", async () => {
+    if (b.disabled) return;
+    b.disabled = true;
+    const { error } = await sb.from("appointments")
+      .update({ status: b.dataset.staleSet, updated_at: new Date().toISOString() })
+      .eq("id", b.dataset.appt);
+    if (error) { console.error(error); toast("Update failed"); b.disabled = false; return; }
+    await loadAll(); render();
+    const left = staleAppointments().length;
+    closeSheet();
+    if (left) openStaleReview();
+    else toast("All caught up");
+  }));
 }
 
 /* ---------- TIME CARD EDITOR ---------- */
