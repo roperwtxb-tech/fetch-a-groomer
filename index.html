@@ -307,7 +307,7 @@ const sb = createClient(CFG.url, CFG.key);
 const BUCKET = "visit-photos";
 // Shown at the bottom of the dashboard so it's possible to confirm at a glance
 // which build is actually running after an upload. Bump this on every release.
-const APP_VERSION = "2026.09.11d";
+const APP_VERSION = "2026.09.14a";
 
 /* ---------- STATE ---------- */
 const DB = {
@@ -2484,11 +2484,21 @@ function openAppointmentDetail(apptId) {
   const total = apptTotal(appt.id);
   const pay = paymentForAppt(appt.id);
   const report = reportForAppt(appt.id);
-  const groupSiblings = appt.visit_group_id ? DB.appointments.filter(a => a.visit_group_id === appt.visit_group_id && a.id !== appt.id) : [];
+  const groupAll = appt.visit_group_id ? DB.appointments.filter(a => a.visit_group_id === appt.visit_group_id && a.id !== appt.id) : [];
+  /* A dog she cancelled is no longer part of this stop. Everything that bills,
+     reports on or moves "the whole household" has to work from the dogs still
+     ON, not from every row that shares the group id. Before this, cancelling
+     two dogs and then checking out the household charged for them anyway AND
+     flipped them back to completed — a groom that never happened, invoiced.
+     Series handling below deliberately still uses groupAll: cancelling one
+     date shouldn't unlink a dog from its standing appointment. */
+  const groupSiblings = bookableAppts(groupAll);
+  const groupOff = groupAll.filter(a => a.status === "cancelled" || a.status === "no_show");
+  const stopActive = bookableAppts([appt, ...groupAll]);   // every dog still on for this stop
   // A repeating multi-dog stop gives each dog its own series. Treat those
   // parallel series as one household series, so cancelling the standing
   // appointment doesn't have to be repeated dog by dog.
-  const householdSeriesIds = [...new Set([appt.series_id, ...groupSiblings.map(a => a.series_id)].filter(Boolean))];
+  const householdSeriesIds = [...new Set([appt.series_id, ...groupAll.map(a => a.series_id)].filter(Boolean))];
   const seriesAppts = householdSeriesIds.length
     ? DB.appointments.filter(a => householdSeriesIds.includes(a.series_id))
     : [];
@@ -2504,7 +2514,8 @@ function openAppointmentDetail(apptId) {
       <span class="pill ${appt.status}">${STATUS_LABEL[appt.status]}</span>
     </div>
     ${seriesAppts.length > 1 ? `<div class="tiny muted" style="margin-bottom:6px;">🔁 Part of a recurring series (${seriesAppts.length} total appointments${seriesDogCount > 1 ? ` across ${seriesDogCount} dogs` : ""})</div>` : ""}
-    ${groupSiblings.length ? `<div class="tiny muted" style="margin-bottom:10px;">🐾 Same visit as: ${groupSiblings.map(a => esc(getPet(a.pet_id)?.name || "")).join(", ")} · household total ${fmtMoney(total + groupSiblings.reduce((s, a) => s + apptTotal(a.id), 0))}</div>` : ""}
+    ${groupSiblings.length ? `<div class="tiny muted" style="margin-bottom:${groupOff.length ? "3px" : "10px"};">🐾 Same visit as: ${groupSiblings.map(a => esc(getPet(a.pet_id)?.name || "")).join(", ")} · household total ${fmtMoney(stopActive.reduce((s, a) => s + apptTotal(a.id), 0))}</div>` : ""}
+    ${groupOff.length ? `<div class="tiny" style="margin-bottom:10px;color:var(--orange-600);">Not counted: ${groupOff.map(a => `${esc(getPet(a.pet_id)?.name || "")} (${esc(STATUS_LABEL[a.status] || a.status)})`).join(", ")} — left off the household total and the checkout.</div>` : ""}
     ${appt.notes ? `<div class="card small" style="background:var(--surface-3);box-shadow:none;margin-bottom:10px;">${esc(appt.notes)}</div>` : ""}
     <a class="btn btn-outline btn-sm" style="margin-bottom:10px;text-decoration:none;" href="${icsDataHref(appt, pet, client)}" download="${esc((pet?.name || "appointment") + "-" + fmtDateShort(appt.scheduled_at) + ".ics")}">📅 Add to Calendar</a>
 
@@ -2544,15 +2555,15 @@ function openAppointmentDetail(apptId) {
 
     <div class="section-title">Visit report</div>
     <button class="btn btn-outline" id="reportBtn">${report ? "View / edit visit report" : "Create visit report"}</button>
-    ${groupSiblings.length ? `<button class="btn btn-outline" style="margin-top:8px;" id="householdReportBtn">🔗 View / print / share household report (${groupSiblings.length + 1} dogs)</button>` : ""}
+    ${groupSiblings.length ? `<button class="btn btn-outline" style="margin-top:8px;" id="householdReportBtn">🔗 View / print / share household report (${stopActive.length} ${stopActive.length === 1 ? "dog" : "dogs"})</button>` : ""}
 
     <div class="section-title">Manage</div>
     <div class="btn-row">
       <button class="btn btn-secondary" id="editApptBtn">Edit</button>
       <button class="btn btn-danger" id="deleteApptBtn">Delete</button>
     </div>
-    ${groupSiblings.length ? `<button class="btn btn-outline" style="margin-top:8px;" id="rescheduleGroupBtn">Reschedule this whole visit (${groupSiblings.length + 1} dogs)</button>` : ""}
-    ${groupSiblings.length ? `<button class="btn btn-primary" style="margin-top:8px;" id="groupCheckoutBtn">✅ Check out whole household (${groupSiblings.length + 1} dogs)</button>` : ""}
+    ${stopActive.length > 1 ? `<button class="btn btn-outline" style="margin-top:8px;" id="rescheduleGroupBtn">Reschedule this whole visit (${stopActive.length} dogs)</button>` : ""}
+    ${stopActive.length > 1 ? `<button class="btn btn-primary" style="margin-top:8px;" id="groupCheckoutBtn">✅ Check out whole household (${stopActive.length} dogs)</button>` : ""}
     ${seriesAppts.length ? `<button class="btn btn-secondary" style="margin-top:8px;" id="extendSeriesBtn">🔁 Extend this recurring series</button>` : ""}
     ${seriesRemaining.length > 1 ? `<button class="btn btn-danger" style="margin-top:8px;" id="deleteSeriesBtn">Delete remaining series appointments (${seriesRemaining.length}${seriesDogCount > 1 ? ` · ${seriesDogCount} dogs` : ""})</button>` : ""}
   `;
@@ -2649,7 +2660,7 @@ function openAppointmentDetail(apptId) {
   const rescheduleGroupBtn = $("#rescheduleGroupBtn");
   if (rescheduleGroupBtn) rescheduleGroupBtn.addEventListener("click", () => {
     openSheet("Reschedule Whole Visit", `
-      <p class="muted small" style="margin-bottom:14px;">Moves ${groupSiblings.map(a => getPet(a.pet_id)?.name).concat(pet?.name).filter(Boolean).join(", ")} to the same new time.</p>
+      <p class="muted small" style="margin-bottom:14px;">Moves ${stopActive.map(a => getPet(a.pet_id)?.name).filter(Boolean).join(", ")} to the same new time.${groupOff.length ? ` ${groupOff.map(a => esc(getPet(a.pet_id)?.name || "")).join(" and ")} stay${groupOff.length === 1 ? "s" : ""} cancelled.` : ""}</p>
       <div class="field"><label>New date & time</label><input type="datetime-local" id="groupWhen" value="${toDatetimeLocal(appt.scheduled_at)}"></div>
       <button class="btn btn-primary" id="groupSaveBtn">Save new time</button>
     `);
@@ -2657,7 +2668,7 @@ function openAppointmentDetail(apptId) {
       const when = $("#groupWhen").value;
       if (!when) { toast("Pick a date and time"); return; }
       const iso = new Date(when).toISOString();
-      const ids = [appt.id, ...groupSiblings.map(a => a.id)];
+      const ids = stopActive.map(a => a.id);
       const { error } = await sb.from("appointments").update({ scheduled_at: iso, updated_at: new Date().toISOString() }).in("id", ids);
       if (error) { console.error(error); toast("Save failed"); return; }
       await loadAll(); closeSheet(); render(); toast("Visit rescheduled");
@@ -2676,7 +2687,7 @@ function openAppointmentDetail(apptId) {
 
   const groupCheckoutBtn = $("#groupCheckoutBtn");
   if (groupCheckoutBtn) groupCheckoutBtn.addEventListener("click", () => {
-    const allAppts = [appt, ...groupSiblings];
+    const allAppts = stopActive;
     const grandTotal = allAppts.reduce((s, a) => s + apptTotal(a.id), 0);
     const rows = allAppts.map(a => {
       const p = getPet(a.pet_id);
@@ -2684,6 +2695,7 @@ function openAppointmentDetail(apptId) {
     }).join("");
     openSheet("Check Out Whole Household", `
       <p class="muted small" style="margin-bottom:12px;">Marks all ${allAppts.length} dogs from this visit as completed and records a payment for each — each dog keeps its own amount, so nothing gets double-counted on the dashboard.</p>
+      ${groupOff.length ? `<p class="small" style="margin-bottom:12px;color:var(--orange-600);">${groupOff.map(a => esc(getPet(a.pet_id)?.name || "")).join(" and ")} ${groupOff.length === 1 ? "was" : "were"} cancelled, so ${groupOff.length === 1 ? "it isn't" : "they aren't"} on this bill.</p>` : ""}
       <div class="card small" style="margin-bottom:14px;">
         ${rows}
         <div class="row between bold" style="border-top:1px solid var(--border);margin-top:8px;padding-top:8px;"><span>Grand total</span><span>${fmtMoney(grandTotal)}</span></div>
@@ -3140,8 +3152,11 @@ async function renderStandaloneReport(reportId) {
 /* ---------- STANDALONE SHAREABLE / PRINTABLE HOUSEHOLD REPORT PAGE (multi-dog visit) ---------- */
 async function renderStandaloneGroupReport(groupId) {
   document.body.innerHTML = `<div id="loading"><div class="spinner"></div><div>Loading report…</div></div>`;
-  const { data: appts, error } = await sb.from("appointments").select("*").eq("visit_group_id", groupId);
-  if (error || !appts || !appts.length) {
+  const { data: allInGroup, error } = await sb.from("appointments").select("*").eq("visit_group_id", groupId);
+  // Same rule as the checkout: a dog she cancelled doesn't belong on the
+  // household report the client sees, or in its total.
+  const appts = (allInGroup || []).filter(a => a.status !== "cancelled" && a.status !== "no_show");
+  if (error || !appts.length) {
     document.body.innerHTML = `<div style="padding:40px 20px;text-align:center;font-family:sans-serif;">Report not found. It may have been deleted.</div>`;
     return;
   }
