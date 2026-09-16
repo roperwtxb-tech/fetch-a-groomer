@@ -231,6 +231,11 @@ main{padding:14px 14px 24px;}
 }
 .appt-row:first-child{border-top:none;}
 .appt-time{width:52px; font-size:12px; font-weight:700; color:var(--teal-700); flex-shrink:0;}
+/* Time held for something that isn't a dog — visually quieter than a booking
+   so a full day still reads as a full day at a glance. */
+.appt-row.block-row{background:repeating-linear-gradient(135deg,var(--surface-3),var(--surface-3) 7px,transparent 7px,transparent 14px);}
+.cal-day .dot.blocked{background:var(--ink-500);}
+.cal-day.selected .dot.blocked{background:#fff; opacity:.6;}
 
 /* ===== Stat tiles ===== */
 .stat-grid{display:grid; grid-template-columns:1fr 1fr; gap:10px;}
@@ -307,13 +312,13 @@ const sb = createClient(CFG.url, CFG.key);
 const BUCKET = "visit-photos";
 // Shown at the bottom of the dashboard so it's possible to confirm at a glance
 // which build is actually running after an upload. Bump this on every release.
-const APP_VERSION = "2026.09.14a";
+const APP_VERSION = "2026.09.16a";
 
 /* ---------- STATE ---------- */
 const DB = {
   clients: [], pets: [], services: [], appointments: [], appointmentSeries: [],
   appointmentServices: [], payments: [], visitReports: [], visitReportPhotos: [],
-  timeEntries: [], waitlist: [],
+  timeEntries: [], waitlist: [], timeBlocks: [],
 };
 const UI = {
   tab: "dashboard",
@@ -486,7 +491,7 @@ async function fetchAllRows(table, orderCol) {
 }
 
 async function loadAll() {
-  const [clients, pets, services, appointments, appointmentSeries, appointmentServices, payments, visitReports, visitReportPhotos, timeEntries, waitlist] = await Promise.all([
+  const [clients, pets, services, appointments, appointmentSeries, appointmentServices, payments, visitReports, visitReportPhotos, timeEntries, waitlist, timeBlocks] = await Promise.all([
     fetchAllRows("clients", "name"),
     fetchAllRows("pets", "name"),
     fetchAllRows("services", "sort_order"),
@@ -498,8 +503,9 @@ async function loadAll() {
     fetchAllRows("visit_report_photos"),
     fetchAllRows("time_entries", "clock_in"),
     fetchAllRows("waitlist", "created_at"),
+    fetchAllRows("time_blocks", "starts_at"),
   ]);
-  for (const [name, res] of Object.entries({ clients, pets, services, appointments, appointmentSeries, appointmentServices, payments, visitReports, visitReportPhotos, timeEntries, waitlist })) {
+  for (const [name, res] of Object.entries({ clients, pets, services, appointments, appointmentSeries, appointmentServices, payments, visitReports, visitReportPhotos, timeEntries, waitlist, timeBlocks })) {
     if (res.error) { console.error(name, res.error); toast("Couldn't load " + name); }
   }
   DB.clients = clients.data || [];
@@ -513,6 +519,7 @@ async function loadAll() {
   DB.visitReportPhotos = visitReportPhotos.data || [];
   DB.timeEntries = timeEntries.data || [];
   DB.waitlist = waitlist.data || [];
+  DB.timeBlocks = timeBlocks.data || [];
 }
 
 /* ---------- LOOKUP HELPERS ---------- */
@@ -2062,6 +2069,32 @@ function apptsOnDay(date) {
 }
 function monthLabel(d) { return d.toLocaleDateString(undefined, { month: "long", year: "numeric" }); }
 
+/* ---------- TIME BLOCKS ----------
+   Time she's reserving for something that isn't a dog: school pickup, lunch,
+   a hard stop at 2pm, a long drive. They live in their own table and are never
+   consulted by anything that counts money or hours, so a block can't inflate a
+   forecast, dent the per-hour rate, or show up needing to be closed out. They
+   exist purely so the calendar tells the truth about what a day has left. */
+function blocksOnDay(date) {
+  return DB.timeBlocks
+    .filter(b => sameDay(new Date(b.starts_at), date))
+    .sort((a, b) => new Date(a.starts_at) - new Date(b.starts_at));
+}
+function blockEnd(b) {
+  return new Date(new Date(b.starts_at).getTime() + (Number(b.duration_minutes) || 0) * 60000);
+}
+function blockedMinutesOn(date) {
+  return blocksOnDay(date).reduce((s, b) => s + (Number(b.duration_minutes) || 0), 0);
+}
+// Half-hour steps up to 8 hours — a block can reasonably swallow a whole day,
+// unlike an appointment. Anything already saved off-list keeps its own value.
+function blockDurationChoices(current) {
+  const opts = [];
+  for (let m = 30; m <= 480; m += 30) opts.push(m);
+  if (current && !opts.includes(Number(current))) { opts.push(Number(current)); opts.sort((a, b) => a - b); }
+  return opts.map(m => `<option value="${m}" ${m === Number(current) ? "selected" : ""}>${fmtDuration(m)}</option>`).join("");
+}
+
 function renderCalendarView() {
   const mode = UI.calMode;
   return `
@@ -2076,6 +2109,7 @@ function renderCalendarView() {
       <button class="icon-btn" data-cal-nav="1" style="background:var(--surface);box-shadow:var(--shadow);color:var(--ink-700)">›</button>
     </div>
     ${mode === "month" ? renderMonthGrid() : mode === "week" ? renderWeekAgenda() : renderDayAgenda()}
+    <button class="btn btn-outline btn-sm" id="addBlockBtn" style="width:100%;margin-top:12px;">⛔ Block off time</button>
   `;
 }
 function calHeaderLabel() {
@@ -2098,11 +2132,13 @@ function forecastBox(label, total, sub, right) {
 }
 function dayForecastBox(date) {
   const f = dayForecast(date);
+  const blocked = blockedMinutesOn(date);
   const right = f.total > 0 ? `<div style="text-align:right;flex-shrink:0;padding-left:10px;">
       <div class="tiny" style="color:var(--teal-700);">Completed ${fmtMoney(f.done)}</div>
       <div class="tiny" style="color:var(--teal-700);">Still to go ${fmtMoney(f.remaining)}</div>
     </div>` : "";
-  return forecastBox("Forecasted revenue", f.total, `${f.dogs} ${f.dogs === 1 ? "dog" : "dogs"} booked`, right);
+  return forecastBox("Forecasted revenue", f.total,
+    `${f.dogs} ${f.dogs === 1 ? "dog" : "dogs"} booked${blocked ? ` · ${fmtDuration(blocked)} blocked off` : ""}`, right);
 }
 function renderMonthGrid() {
   const y = UI.calDate.getFullYear(), m = UI.calDate.getMonth();
@@ -2116,19 +2152,20 @@ function renderMonthGrid() {
       ${dow.map(d => `<div class="cal-dow">${d}</div>`).join("")}
       ${days.map(d => {
         const count = apptsOnDay(d).length;
+        const blocks = blocksOnDay(d).length;
         const cls = ["cal-day"];
         if (d.getMonth() !== m) cls.push("other-month");
         if (sameDay(d, today)) cls.push("today");
         if (sameDay(d, UI.selectedDate)) cls.push("selected");
         return `<div class="${cls.join(" ")}" data-cal-day="${d.toISOString()}">
           <span>${d.getDate()}</span>
-          ${count ? `<div class="dots">${Array.from({ length: Math.min(count, 3) }).map(() => `<span class="dot"></span>`).join("")}</div>` : ""}
+          ${count || blocks ? `<div class="dots">${Array.from({ length: Math.min(count, 3) }).map(() => `<span class="dot"></span>`).join("")}${blocks ? `<span class="dot blocked"></span>` : ""}</div>` : ""}
         </div>`;
       }).join("")}
     </div>
     <div class="section-title">${sameDay(UI.selectedDate, today) ? "Today" : fmtDate(UI.selectedDate)}</div>
     ${dayForecastBox(UI.selectedDate)}
-    ${renderAgendaList(apptsOnDay(UI.selectedDate))}
+    ${renderDayList(UI.selectedDate)}
   `;
 }
 function renderWeekAgenda() {
@@ -2148,17 +2185,39 @@ function renderWeekAgenda() {
           <span>${fmtDate(d)}</span>
           ${dayTotal > 0 ? `<span style="color:var(--teal-700);">${fmtMoney(dayTotal)}</span>` : ""}
         </div>
-        ${appts.length === 0 ? `<div class="tiny muted">No appointments</div>` :
-          appts.map(a => renderApptAgendaRow(a)).join("")}
+        ${(() => {
+          const items = [
+            ...appts.map(a => ({ t: new Date(a.scheduled_at), html: renderApptAgendaRow(a) })),
+            ...blocksOnDay(d).map(b => ({ t: new Date(b.starts_at), html: renderBlockAgendaRow(b) })),
+          ].sort((x, y) => x.t - y.t);
+          return items.length ? items.map(i => i.html).join("") : `<div class="tiny muted">Nothing booked</div>`;
+        })()}
       </div>`;
     }).join("")}</div>`;
 }
 function renderDayAgenda() {
-  return `${dayForecastBox(UI.calDate)}${renderAgendaList(apptsOnDay(UI.calDate))}`;
+  return `${dayForecastBox(UI.calDate)}${renderDayList(UI.calDate)}`;
 }
-function renderAgendaList(appts) {
-  if (appts.length === 0) return `<div class="card empty small"><div class="ic">📭</div>No appointments this day.</div>`;
-  return `<div class="card">${appts.map(a => renderApptAgendaRow(a)).join("")}</div>`;
+// Appointments and blocks interleaved by start time, so the day reads the way
+// it will actually happen rather than dogs first and everything else after.
+function renderDayList(date) {
+  const items = [
+    ...apptsOnDay(date).map(a => ({ t: new Date(a.scheduled_at), html: renderApptAgendaRow(a) })),
+    ...blocksOnDay(date).map(b => ({ t: new Date(b.starts_at), html: renderBlockAgendaRow(b) })),
+  ].sort((x, y) => x.t - y.t);
+  if (!items.length) return `<div class="card empty small"><div class="ic">📭</div>Nothing on this day.</div>`;
+  return `<div class="card">${items.map(i => i.html).join("")}</div>`;
+}
+function renderBlockAgendaRow(b) {
+  const end = blockEnd(b);
+  return `<div class="appt-row block-row tap" data-open-block="${b.id}" style="cursor:pointer;">
+    <div class="appt-time" style="color:var(--ink-500);">${fmtTime(b.starts_at)}</div>
+    <div style="flex:1;min-width:0;">
+      <div class="bold small">⛔ ${esc(b.label)}</div>
+      <div class="tiny muted">Until ${fmtTime(end)} · ${fmtDuration(b.duration_minutes)}${b.series_id ? " · repeats weekly" : ""}</div>
+    </div>
+    <span class="pill" style="background:var(--ink-100);color:var(--ink-700);">Blocked</span>
+  </div>`;
 }
 function renderApptAgendaRow(a) {
   const pet = getPet(a.pet_id), client = getClient(a.client_id);
@@ -2171,6 +2230,113 @@ function renderApptAgendaRow(a) {
     <span class="pill ${a.status}">${STATUS_LABEL[a.status]}</span>
   </div>`;
 }
+/* Common reasons she blocks time, one tap instead of typing on a phone in a
+   driveway. She can still write anything she likes. */
+const BLOCK_PRESETS = ["School pickup", "Lunch", "Drive time", "Personal", "Day off", "Hard stop"];
+
+function openBlockForm(block) {
+  const isEdit = !!block;
+  const start = block ? new Date(block.starts_at) : (() => {
+    // Default to the day she's looking at, at a sensible hour.
+    const d = new Date(UI.calMode === "month" ? UI.selectedDate : UI.calDate);
+    d.setHours(14, 0, 0, 0);
+    return d;
+  })();
+  const seriesCount = isEdit && block.series_id
+    ? DB.timeBlocks.filter(b => b.series_id === block.series_id && new Date(b.starts_at) >= new Date(block.starts_at)).length
+    : 0;
+
+  openSheet(isEdit ? "Edit Block" : "Block Off Time", `
+    <p class="tiny muted" style="margin:0 0 14px;">Time held for something that isn't a dog. It shows on the calendar but never counts toward revenue, your hourly rate, or anything needing closed out.</p>
+    <div class="field"><label>What is it? *</label>
+      <input type="text" id="bLabel" value="${esc(block?.label || "")}" placeholder="School pickup">
+      ${isEdit ? "" : `<div class="chip-select" style="margin-top:8px;">
+        ${BLOCK_PRESETS.map(t => `<button type="button" class="chip" data-block-preset="${esc(t)}">${esc(t)}</button>`).join("")}
+      </div>`}
+    </div>
+    <div class="field"><label>Starts</label>
+      <input type="datetime-local" id="bStart" value="${toDatetimeLocal(start)}">
+    </div>
+    <div class="field"><label>How long</label>
+      <select id="bDuration">${blockDurationChoices(block?.duration_minutes || 120)}</select>
+    </div>
+    ${isEdit ? "" : `
+    <div class="field"><label>Repeat every week until (optional)</label>
+      <input type="date" id="bUntil">
+      <div class="tiny muted" style="margin-top:4px;">Leave empty for a one-off. Use this for something standing, like school pickup.</div>
+    </div>`}
+    <div class="field"><label>Note</label>
+      <textarea id="bNotes" placeholder="Anything worth remembering">${esc(block?.notes || "")}</textarea>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-primary" id="bSaveBtn">${isEdit ? "Save" : "Add block"}</button>
+      ${isEdit ? `<button class="btn btn-danger" id="bDeleteBtn">Delete</button>` : ""}
+    </div>
+    ${seriesCount > 1 ? `<button class="btn btn-danger" style="margin-top:8px;width:100%;" id="bDeleteSeriesBtn">Delete this and the ${seriesCount - 1} after it</button>` : ""}
+  `);
+
+  document.querySelectorAll("[data-block-preset]").forEach(b => b.addEventListener("click", () => {
+    $("#bLabel").value = b.dataset.blockPreset;
+  }));
+
+  $("#bSaveBtn").addEventListener("click", async () => {
+    const btn = $("#bSaveBtn");
+    if (btn.disabled) return;
+    const label = $("#bLabel").value.trim();
+    if (!label) { toast("Give it a name"); return; }
+    const when = $("#bStart").value;
+    if (!when) { toast("Pick a date and time"); return; }
+    btn.disabled = true; btn.textContent = "Saving…";
+    const undo = () => { btn.disabled = false; btn.textContent = isEdit ? "Save" : "Add block"; };
+
+    const duration = parseInt($("#bDuration").value, 10) || 60;
+    const notes = $("#bNotes").value.trim() || null;
+    const base = new Date(when);
+
+    if (isEdit) {
+      const { error } = await sb.from("time_blocks")
+        .update({ label, starts_at: base.toISOString(), duration_minutes: duration, notes, updated_at: new Date().toISOString() })
+        .eq("id", block.id);
+      if (error) { console.error(error); toast("Save failed"); undo(); return; }
+    } else {
+      // A standing block repeats weekly to an end date, same shape as a
+      // recurring appointment, and leans on the same runaway-row ceiling.
+      const untilStr = $("#bUntil") ? $("#bUntil").value : "";
+      const dates = untilStr ? repeatDatesUntil(base, 1, untilStr) : [base];
+      const seriesId = dates.length > 1 ? uid() : null;
+      const rows = dates.map(d => ({
+        label, starts_at: d.toISOString(), duration_minutes: duration, notes, series_id: seriesId,
+      }));
+      const { error } = await sb.from("time_blocks").insert(rows);
+      if (error) { console.error(error); toast("Save failed"); undo(); return; }
+      await loadAll(); closeSheet(); render();
+      toast(rows.length > 1 ? `${rows.length} blocks added` : "Time blocked off");
+      return;
+    }
+    await loadAll(); closeSheet(); render();
+    toast("Saved");
+  });
+
+  const del = $("#bDeleteBtn");
+  if (del) del.addEventListener("click", () => {
+    confirmDialog(`Remove "${block.label}" from the calendar?`, async () => {
+      const { error } = await sb.from("time_blocks").delete().eq("id", block.id);
+      if (error) { console.error(error); toast("Delete failed"); return; }
+      await loadAll(); closeSheet(); render(); toast("Block removed");
+    });
+  });
+
+  const delSeries = $("#bDeleteSeriesBtn");
+  if (delSeries) delSeries.addEventListener("click", () => {
+    const doomed = DB.timeBlocks.filter(b => b.series_id === block.series_id && new Date(b.starts_at) >= new Date(block.starts_at));
+    confirmDialog(`Remove ${doomed.length} "${block.label}" blocks from this one forward?`, async () => {
+      const { error } = await sb.from("time_blocks").delete().in("id", doomed.map(b => b.id));
+      if (error) { console.error(error); toast("Delete failed"); return; }
+      await loadAll(); closeSheet(); render(); toast(`${doomed.length} blocks removed`);
+    });
+  });
+}
+
 function bindCalendarEvents() {
   document.querySelectorAll("[data-cal-mode]").forEach(b => b.addEventListener("click", () => { UI.calMode = b.dataset.calMode; render(); }));
   document.querySelectorAll("[data-cal-nav]").forEach(b => b.addEventListener("click", () => {
@@ -2182,6 +2348,11 @@ function bindCalendarEvents() {
   }));
   document.querySelectorAll("[data-cal-day]").forEach(b => b.addEventListener("click", () => { UI.selectedDate = new Date(b.dataset.calDay); render(); }));
   document.querySelectorAll("[data-open-appt]").forEach(b => b.addEventListener("click", () => openAppointmentDetail(b.dataset.openAppt)));
+  document.querySelectorAll("[data-open-block]").forEach(b => b.addEventListener("click", () => {
+    openBlockForm(DB.timeBlocks.find(x => x.id === b.dataset.openBlock));
+  }));
+  const addBlock = $("#addBlockBtn");
+  if (addBlock) addBlock.addEventListener("click", () => openBlockForm());
 }
 
 /* ---------- APPOINTMENT FORM (create / edit) ---------- */
