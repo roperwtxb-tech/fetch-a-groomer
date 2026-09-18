@@ -312,7 +312,7 @@ const sb = createClient(CFG.url, CFG.key);
 const BUCKET = "visit-photos";
 // Shown at the bottom of the dashboard so it's possible to confirm at a glance
 // which build is actually running after an upload. Bump this on every release.
-const APP_VERSION = "2026.09.16a";
+const APP_VERSION = "2026.09.18a";
 
 /* ---------- STATE ---------- */
 const DB = {
@@ -3155,7 +3155,11 @@ async function openVisitReportEditor(apptId) {
 
     <div class="field"><label>Before photos</label><div class="photo-grid" id="vrBeforeGrid"></div></div>
     <div class="field"><label>After photos</label><div class="photo-grid" id="vrAfterGrid"></div></div>
-    <input type="file" accept="image/*" capture="environment" id="vrFileInput" class="hidden">
+    <!-- No capture attribute on purpose. With capture="environment" the phone
+         jumps straight to the camera and the photo library is never offered,
+         so an existing picture or a screenshot couldn't be used at all.
+         Without it the phone asks: Photo Library, Take Photo, or Choose File. -->
+    <input type="file" accept="image/*" multiple id="vrFileInput" class="hidden">
 
     <div class="btn-row">
       <button class="btn btn-primary" id="vrSaveBtn">Save report</button>
@@ -3200,22 +3204,33 @@ async function openVisitReportEditor(apptId) {
   renderPhotoGrids();
 
   $("#vrFileInput").addEventListener("change", async (e) => {
-    const file = e.target.files[0]; if (!file) return;
+    const picked = [...e.target.files];
+    e.target.value = "";                       // let her re-pick the same file later
+    if (!picked.length) return;
     setLoading(true);
-    const path = `${apptId}/${uid()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
-    const { error: upErr } = await sb.storage.from(BUCKET).upload(path, file, { upsert: false });
-    if (upErr) { setLoading(false); console.error(upErr); toast("Photo upload failed"); return; }
-    const { data: urlData } = sb.storage.from(BUCKET).getPublicUrl(path);
-    const { data: row, error: insErr } = await sb.from("visit_report_photos").insert({
-      visit_report_id: report.id, photo_url: urlData.publicUrl, kind: pendingPhotoKind,
-    }).select().single();
+    const added = [];
+    let failed = 0;
+    // One at a time rather than all at once: on rural cell service a burst of
+    // parallel uploads is slower and likelier to fail than a queue.
+    for (const original of picked) {
+      const file = await shrinkImage(original);
+      const path = `${apptId}/${uid()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+      const { error: upErr } = await sb.storage.from(BUCKET).upload(path, file, { upsert: false });
+      if (upErr) { console.error(upErr); failed++; continue; }
+      const { data: urlData } = sb.storage.from(BUCKET).getPublicUrl(path);
+      const { data: row, error: insErr } = await sb.from("visit_report_photos").insert({
+        visit_report_id: report.id, photo_url: urlData.publicUrl, kind: pendingPhotoKind,
+      }).select().single();
+      if (insErr) { console.error(insErr); failed++; continue; }
+      added.push(row);
+      photos.push(row); (row.kind === "before" ? before : after).push(row);
+    }
     setLoading(false);
-    e.target.value = "";
-    if (insErr) { console.error(insErr); toast("Couldn't save photo"); return; }
-    await loadAll();
-    photos.push(row); (row.kind === "before" ? before : after).push(row);
-    renderPhotoGrids();
-    toast("Photo added");
+    if (added.length) { await loadAll(); renderPhotoGrids(); }
+    // Say exactly what happened — a silent partial failure is worse than none.
+    if (added.length && failed) toast(`${added.length} added, ${failed} failed`);
+    else if (failed) toast(failed === 1 ? "Photo upload failed" : `${failed} photos failed`);
+    else toast(added.length === 1 ? "Photo added" : `${added.length} photos added`);
   });
 
   $("#vrSaveBtn").addEventListener("click", async () => {
@@ -3237,6 +3252,42 @@ async function openVisitReportEditor(apptId) {
 }
 
 /* ---------- STANDALONE SHAREABLE / PRINTABLE REPORT PAGE ---------- */
+/* Photos go up exactly as the phone took them unless something shrinks them
+   first, and a phone photo is 2-4MB. At her volume that fills the free 1GB in
+   about six weeks, and every upload is a wait in somebody's driveway on cell
+   service. Resizing on the phone costs nothing and buys roughly 10x.
+   2048px on the long edge rather than something smaller because screenshots
+   are a real use here, and text needs to stay readable. */
+const PHOTO_MAX_EDGE = 2048;
+const PHOTO_QUALITY = 0.82;
+const PHOTO_SKIP_UNDER = 600 * 1024;   // already small; re-encoding only hurts
+
+async function shrinkImage(file) {
+  if (!file || !/^image\//.test(file.type) || file.type === "image/gif") return file;
+  if (file.size < PHOTO_SKIP_UNDER) return file;
+  try {
+    let bmp;
+    // from-image honours EXIF rotation, so a portrait photo doesn't land sideways.
+    try { bmp = await createImageBitmap(file, { imageOrientation: "from-image" }); }
+    catch (e) { bmp = await createImageBitmap(file); }
+    const scale = Math.min(1, PHOTO_MAX_EDGE / Math.max(bmp.width, bmp.height));
+    const w = Math.max(1, Math.round(bmp.width * scale));
+    const h = Math.max(1, Math.round(bmp.height * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = w; canvas.height = h;
+    canvas.getContext("2d").drawImage(bmp, 0, 0, w, h);
+    if (bmp.close) bmp.close();
+    const blob = await new Promise(res => canvas.toBlob(res, "image/jpeg", PHOTO_QUALITY));
+    // If anything came out bigger, or came out empty, keep the original.
+    if (!blob || blob.size >= file.size) return file;
+    return new File([blob], file.name.replace(/\.[^.]+$/, "") + ".jpg", { type: "image/jpeg" });
+  } catch (e) {
+    // A failed shrink must never cost her the photo.
+    console.error("Couldn't shrink photo, uploading as-is", e);
+    return file;
+  }
+}
+
 function reportCloseButtonHtml() {
   return `<button id="reportCloseBtn" class="no-print" aria-label="Close report" style="position:fixed;top:14px;right:14px;z-index:50;width:38px;height:38px;border-radius:50%;border:1px solid var(--border);background:var(--surface-1,#fff);box-shadow:0 2px 8px rgba(0,0,0,.15);font-size:18px;line-height:1;display:flex;align-items:center;justify-content:center;">✕</button>`;
 }
