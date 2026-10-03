@@ -312,7 +312,7 @@ const sb = createClient(CFG.url, CFG.key);
 const BUCKET = "visit-photos";
 // Shown at the bottom of the dashboard so it's possible to confirm at a glance
 // which build is actually running after an upload. Bump this on every release.
-const APP_VERSION = "2026.09.18a";
+const APP_VERSION = "2026.10.03a";
 
 /* ---------- STATE ---------- */
 const DB = {
@@ -738,6 +738,115 @@ function fmtElapsed(ms) {
   const p = n => String(n).padStart(2, "0");
   return `${hh}:${p(mm)}:${p(ss)}`;
 }
+/* ---------- MONTH HISTORY ----------
+   The Earnings card only ever shows THIS week and THIS month, so the moment a
+   month rolls over its numbers become unreachable in the app. This is the back
+   catalogue: every month she's worked, on both bases, because the two answer
+   different questions and taxes need the paid one. */
+function ymKey(d) { const x = new Date(d); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}`; }
+
+function monthsWithActivity() {
+  const keys = new Set();
+  for (const p of canonicalPayments()) if (p.paid && p.paid_at) keys.add(ymKey(p.paid_at));
+  for (const a of DB.appointments) if (a.status === "completed") keys.add(ymKey(a.scheduled_at));
+  return [...keys].sort().reverse();          // newest first
+}
+
+function monthWindow(key) {
+  const [y, m] = key.split("-").map(Number);
+  return [new Date(y, m - 1, 1), new Date(y, m, 1)];
+}
+function monthLabelFromKey(key) {
+  const [from] = monthWindow(key);
+  return from.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+}
+
+function monthStats(key) {
+  const [from, to] = monthWindow(key);
+  const now = new Date();
+  const hb = hourlyBasis(from, to, now);
+  const completed = completedInWindow(from, to);
+  const stops = new Set(completed.map(a => a.visit_group_id || `solo:${a.id}`));
+  const days = new Set(completed.map(a => toDateOnlyLocal(new Date(a.scheduled_at))));
+  const paidAppts = paidInWindow(from, to);
+  return {
+    key, from, to, label: monthLabelFromKey(key),
+    paidGrooming: revenueBetween(from, to),
+    paidTips: tipsBetween(from, to),
+    groomedGrooming: earnedRevenueBetween(from, to),
+    groomedTips: earnedTipsBetween(from, to),
+    byMethod: revenueByMethodBetween(from, to),
+    dogs: completed.length,
+    stops: stops.size,
+    daysWorked: days.size,
+    invoicesPaid: paidAppts.length,
+    hours: hb.hours,
+    rate: hb.rate,
+    untrackedDays: hb.skipped,
+    untrackedMoney: hb.untracked,
+  };
+}
+
+function openMonthDetail(key) {
+  const m = monthStats(key);
+  const row = (label, value, sub, strong) => `
+    <div class="row between" style="padding:9px 0;border-top:1px solid var(--border);align-items:flex-start;gap:10px;">
+      <span style="flex:1;min-width:0;">
+        <span class="small${strong ? " bold" : ""}">${label}</span>
+        ${sub ? `<span class="tiny muted" style="display:block;">${sub}</span>` : ""}
+      </span>
+      <span class="${strong ? "bold" : "small"}" style="flex-shrink:0;text-align:right;">${value}</span>
+    </div>`;
+
+  openSheet(m.label, `
+    <div class="card" style="background:var(--teal-100);border:1px solid var(--teal-500);box-shadow:none;">
+      <div class="tiny bold" style="text-transform:uppercase;letter-spacing:.04em;color:var(--teal-700);">Money that landed this month</div>
+      <div class="bold" style="font-size:27px;line-height:1.15;color:var(--teal-900);margin-top:2px;">${fmtMoney(m.paidGrooming + m.paidTips)}</div>
+      <div class="tiny" style="color:var(--teal-700);">${fmtMoney(m.paidGrooming)} grooming + ${fmtMoney(m.paidTips)} tips · this is the figure for taxes</div>
+    </div>
+
+    <div class="section-title">When paid</div>
+    <div class="card">
+      <p class="tiny muted" style="margin:0 0 2px;">Counted on the day the money arrived — matches the bank.</p>
+      ${row("Grooming", fmtMoney(m.paidGrooming))}
+      ${row("Tips", `<span style="color:var(--teal-600);font-weight:700;">${fmtMoney(m.paidTips)}</span>`)}
+      ${row("Total received", fmtMoney(m.paidGrooming + m.paidTips), "", true)}
+      ${row("Invoices paid", String(m.invoicesPaid))}
+      ${Object.keys(m.byMethod).length ? `
+        <div class="tiny bold muted" style="text-transform:uppercase;letter-spacing:.04em;padding:11px 0 0;border-top:1.5px solid var(--border);margin-top:4px;">How it came in</div>
+        <p class="tiny muted" style="margin:3px 0 0;">Grooming only — tips aren't recorded against a method, so these add up to ${fmtMoney(m.paidGrooming)}, not the total above.</p>
+        ${Object.entries(m.byMethod).sort((a, b) => b[1] - a[1])
+          .map(([k, v]) => row(esc(PAYMENT_METHOD_LABEL[k] || k), fmtMoney(v))).join("")}` : ""}
+    </div>
+
+    <div class="section-title">When groomed</div>
+    <div class="card">
+      <p class="tiny muted" style="margin:0 0 2px;">Counted on the day you did the work, paid or not.</p>
+      ${row("Grooming", fmtMoney(m.groomedGrooming))}
+      ${row("Tips", `<span style="color:var(--teal-600);font-weight:700;">${fmtMoney(m.groomedTips)}</span>`)}
+      ${row("Total earned", fmtMoney(m.groomedGrooming + m.groomedTips), "", true)}
+      ${row("Dogs groomed", String(m.dogs))}
+      ${row("Stops", String(m.stops), m.dogs !== m.stops ? "houses, counting multi-dog visits once" : "")}
+      ${row("Days worked", String(m.daysWorked))}
+    </div>
+
+    <div class="section-title">Hours</div>
+    <div class="card">
+      ${row("Clocked", fmtHours(m.hours))}
+      ${row("Per hour", m.rate === null ? "—" : fmtMoney(m.rate) + "/hr", "Grooming only — tips not counted", true)}
+      ${m.untrackedDays ? `<p class="tiny" style="margin:8px 0 0;color:var(--orange-600);">${m.untrackedDays === 1 ? "1 day" : m.untrackedDays + " days"} had grooming but no time card — ${fmtMoney(m.untrackedMoney)} of work is left out of the rate. The money above still counts it.</p>` : ""}
+    </div>
+
+    <button class="btn btn-outline" id="mExportBtn" style="width:100%;margin-top:14px;">💵 Download ${esc(m.label)} as a spreadsheet</button>
+  `);
+
+  $("#mExportBtn").addEventListener("click", async () => {
+    const csv = appointmentsCSV(m.from, m.to);
+    await downloadCSV(`fetch-a-groomer-${m.key}.csv`, csv);
+    toast(`${m.label} exported`);
+  });
+}
+
 /* ---------- GOALS ----------
    Her targets are grooming money ONLY. Tips are excluded on purpose: she
    doesn't want to plan around money nobody promised her, so a tip is always
@@ -932,14 +1041,26 @@ function clientsCSV() {
 }
 
 // One row per appointment — the bookkeeping view.
-function appointmentsCSV() {
+function appointmentsCSV(from, to) {
   const header = [
     "Date", "Time", "Client", "Pet", "Status", "Services", "Amount due",
     "Paid", "Amount paid", "Tip", "Total received", "Method", "Paid on",
     "Visit notes", "Multi-dog visit",
   ];
   const rows = [header];
-  const appts = DB.appointments.slice().sort((a, b) => new Date(a.scheduled_at) - new Date(b.scheduled_at));
+  // A month export has to follow the same rule the month's totals follow:
+  // a visit belongs to the month it was PAID in if it's been paid, otherwise
+  // the month it was groomed in. Without that the rows wouldn't add up to the
+  // figures she's looking at.
+  let appts = DB.appointments.slice();
+  if (from && to) {
+    appts = appts.filter(a => {
+      const pay = paymentForAppt(a.id);
+      const when = pay && pay.paid && pay.paid_at ? new Date(pay.paid_at) : new Date(a.scheduled_at);
+      return when >= from && when < to;
+    });
+  }
+  appts.sort((a, b) => new Date(a.scheduled_at) - new Date(b.scheduled_at));
   for (const a of appts) {
     const pay = paymentForAppt(a.id);
     const svc = servicesForAppt(a.id);
@@ -1247,6 +1368,43 @@ function renderDashboard() {
       }).join("")}
 
     <div class="section-title">Now and then</div>
+    ${(() => {
+      const keys = monthsWithActivity();
+      const thisKey = ymKey(new Date());
+      const stats = keys.map(monthStats);
+      // Year subtotals on the paid basis, which is the one tax returns want.
+      const years = {};
+      for (const m of stats) {
+        const y = m.key.slice(0, 4);
+        years[y] = (years[y] || 0) + m.paidGrooming + m.paidTips;
+      }
+      let lastYear = null;
+      const rows = stats.map(m => {
+        const y = m.key.slice(0, 4);
+        const head = y !== lastYear ? `
+          <div class="row between tiny bold" style="padding:9px 0 5px;border-top:1px solid var(--border);color:var(--teal-700);text-transform:uppercase;letter-spacing:.04em;">
+            <span>${y}</span><span>${fmtMoney(years[y])}</span>
+          </div>` : "";
+        lastYear = y;
+        return head + `
+          <div class="row between tap" data-open-month="${m.key}" style="padding:10px 0;border-top:1px solid var(--border);align-items:flex-start;gap:10px;cursor:pointer;">
+            <span style="flex:1;min-width:0;">
+              <span class="bold small">${esc(m.from.toLocaleDateString(undefined, { month: "long" }))}${m.key === thisKey ? ` <span class="tiny muted">so far</span>` : ""}</span>
+              <span class="tiny muted" style="display:block;">${m.dogs} ${m.dogs === 1 ? "dog" : "dogs"} · ${fmtHours(m.hours)}${m.rate !== null ? ` · ${fmtMoney(m.rate)}/hr` : ""}</span>
+            </span>
+            <span style="text-align:right;flex-shrink:0;">
+              <span class="bold">${fmtMoney(m.paidGrooming + m.paidTips)}</span>
+              <span class="tiny muted" style="display:block;">${fmtMoney(m.paidTips)} tips</span>
+            </span>
+          </div>`;
+      }).join("");
+      return `${collapsible("months", "Past months", keys.length ? String(keys.length) : "", `
+    <div class="card">
+      <p class="tiny muted" style="margin:0 0 2px;">Totals are money that actually landed that month — the figure to use for taxes. Tap a month for the full breakdown and a spreadsheet of it.</p>
+      ${keys.length ? rows : `<p class="tiny muted" style="margin:11px 0 0;text-align:center;">No finished months yet.</p>`}
+    </div>
+    `)}`;
+    })()}
     ${collapsible("pay", "Revenue by payment method", "", `
     <div class="card">
       <div class="segmented" style="margin-bottom:14px;">
@@ -1348,6 +1506,8 @@ function bindDashboardEvents() {
     await loadAll(); render();
     toast(`Clocked out — ${fmtHours(entryMs({ ...shift, clock_out: new Date().toISOString() }) / 3600000)}`);
   });
+  document.querySelectorAll("[data-open-month]").forEach(b => b.addEventListener("click", () => openMonthDetail(b.dataset.openMonth)));
+
   const goalsBtn = $("#editGoalsBtn");
   if (goalsBtn) goalsBtn.addEventListener("click", () => openGoalsForm());
 
